@@ -747,7 +747,7 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--n-train", type=int, default=4000)
     parser.add_argument("--n-test", type=int, default=1000)
-    parser.add_argument("--max-samples", type=int, default=128)
+    parser.add_argument("--max-samples", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--success-rel-l2-factor", type=float, default=1.5)
     parser.add_argument("--success-mse-factor", type=float, default=2.0)
@@ -839,6 +839,7 @@ def main() -> None:
             processed = 0
 
             for x_gt, clean_init, y_clean, clean_pred in clean_rows_cache:
+                print(f"Processed {processed} samples")
                 if processed >= args.max_samples:
                     break
 
