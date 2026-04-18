@@ -115,14 +115,14 @@ class InitReconstructor:
         self.init_method = init_method
         self.summary = summary
         self.radon = radon
-        self.l_value = float(summary.get("operator_norm_A2" or radon.norm_A2 or 1.0))
+        self.l_value = float(summary.get("operator_norm_A2") or radon.norm_A2 or 1.0)
         self.tau = 1.0 / max(self.l_value, 1e-6)
         self.sigma = 1.0 / max(self.l_value, 1e-6)
         self.theta = 1.0
-        self.tv_alpha = float(summary.get("tv_best_alpha" or 0.0))
-        self.tv_iters = int(summary.get("tv_iters_final" or 0))
-        self.lw_iters = int(summary.get("lw_iters" or 0))
-        self.lw_omega = float(summary.get("lw_omega" or 1.0 / max(self.l_value, 1e-6)))
+        self.tv_alpha = float(summary.get("tv_best_alpha") or 0.0)
+        self.tv_iters = int(summary.get("tv_iters_final") or 0)
+        self.lw_iters = int(summary.get("lw_iters") or 0)
+        self.lw_omega = float(summary.get("lw_omega") or 1.0 / max(self.l_value, 1e-6))
 
     def _fbp_seed(self, y: torch.Tensor) -> torch.Tensor:
         if self.init_method == "fbp" and self.example == "ellipses":
