@@ -161,6 +161,11 @@ class MatrixRadonAdapter(_RadonBase):
 
         if self.svd_rank > 0:
             self._build_pseudoinverse(csr)
+            if self.phi is not None:
+                ang_mask = ((self.angles >= self.phi[0]) & (self.angles < self.phi[1]))
+                row_mask = np.repeat(ang_mask, self.det_count)
+                self._build_pseudoinverse_la(csr[row_mask, :])
+
 
         A = self._scipy_csr_to_torch(csr)
         AT = self._scipy_csr_to_torch(csr.T.tocsr())
@@ -188,6 +193,26 @@ class MatrixRadonAdapter(_RadonBase):
         self._pinv_V    = torch.from_numpy(Vt.T.astype(np.float64)).to(device=self.device, dtype=self.dtype)
         self._pinv_Ut   = torch.from_numpy(U.T.astype(np.float64)).to(device=self.device, dtype=self.dtype)
         self._pinv_inv_s = torch.from_numpy((1.0 / s).astype(np.float64)).to(device=self.device, dtype=self.dtype)
+
+    def _build_pseudoinverse_la(self, csr_la: scipy.sparse.csr_matrix) -> None:
+        """
+        Compute truncated SVD of the limited-angle submatrix A_la and store
+        pseudoinverse factors used by `pseudoinverse_la`.
+
+        A_la is the submatrix of A whose rows correspond to measured angles only.
+        Stores:
+          _la_pinv_V      : (resolution**2, svd_rank)
+          _la_pinv_Ut     : (svd_rank, n_la_angles*det_count)
+          _la_pinv_inv_s  : (svd_rank,)
+        """
+        U, s, Vt = scipy.sparse.linalg.svds(csr_la, k=self.svd_rank)
+        U = U[:, ::-1].copy()
+        s = s[::-1].copy()
+        Vt = Vt[::-1, :].copy()
+
+        self._la_pinv_V = torch.from_numpy(Vt.T.astype(np.float64)).to(device=self.device, dtype=self.dtype)
+        self._la_pinv_Ut = torch.from_numpy(U.T.astype(np.float64)).to(device=self.device, dtype=self.dtype)
+        self._la_pinv_inv_s = torch.from_numpy((1.0 / s).astype(np.float64)).to(device=self.device, dtype=self.dtype)
 
     def _scipy_csr_to_torch(self, mat: scipy.sparse.csr_matrix) -> torch.Tensor:
         """Convert a scipy CSR matrix to a torch sparse_csr_tensor on self.device."""
@@ -278,3 +303,38 @@ class MatrixRadonAdapter(_RadonBase):
         x_flat = self._pinv_V @ intermediate
 
         return x_flat.t().reshape(B, C, self.resolution, self.resolution)
+
+    def pseudoinverse_la(self, y: torch.Tensor) -> torch.Tensor:
+        """
+        Apply the limited-angle pseudoinverse A_la^+ to a masked sinogram.
+
+        Parameters
+        ----------
+        y : torch.Tensor, shape (B, C, n_angles, det_count)
+            Masked sinogram from ``forward_la`` (zeros at unmeasured angles).
+
+        Returns
+        -------
+        torch.Tensor, shape (B, C, resolution, resolution)
+            Range component A_la^+ A_la e = V_la V_la^T e.
+        """
+        if not hasattr(self, '_la_pinv_V'):
+            raise RuntimeError(
+                "LA pseudoinverse factors not built. Pass svd_rank > 0 and phi at construction."
+            )
+        orig_device = y.device
+        orig_dtype = y.dtype
+        B, C, n_a, nd = y.shape
+
+        # Extract measured-angle rows; _ran_mask_np shape: (1,1,n_angles,det_count)
+        ang_mask = self._ran_mask_np[0, 0, :, 0].astype(bool)
+        y_la = y[:, :, ang_mask, :]  # (B, C, n_la, det_count)
+        n_la = int(ang_mask.sum())
+
+        y_flat = (y_la / self.dx).reshape(B * C, n_la * nd).to(dtype=self.dtype, device=self.device)
+
+        intermediate = self._la_pinv_Ut @ y_flat.t()  # (svd_rank, B*C)
+        intermediate = self._la_pinv_inv_s.unsqueeze(1) * intermediate
+        x_flat = self._la_pinv_V @ intermediate  # (res^2, B*C)
+
+        return x_flat.t().reshape(B, C, self.resolution, self.resolution).to(device=orig_device, dtype=orig_dtype)

@@ -18,7 +18,7 @@ from src.landweber import landweber
 from src.radon import AstraRadonAdapter
 from src.radon_matrix import MatrixRadonAdapter
 from src.total_variation import tv_cp
-from src.utils import build_models, psnr, rel_l2_np, set_seed, ssim, to_4d
+from src.utils import build_models, decompose_error, psnr, rel_l2_np, set_seed, ssim, to_4d, visualise_decomposition
 
 
 
@@ -611,6 +611,26 @@ def save_examples(
             fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         plt.savefig(out_dir / f"example_{idx:03d}.png", dpi=160)
         plt.close(fig)
+
+
+        if "e_ran_clean" in row:
+            visualise_decomposition(
+                gt=row["x_gt"],
+                recon=row["clean_pred"],
+                e_ran=row["e_ran_clean"],
+                e_nul=row["e_nul_clean"],
+                out_path=out_dir / f"decomp_clean_{idx:03d}.png",
+                title=f"Clean — error decomposition (example {idx})",
+            )
+            visualise_decomposition(
+                gt=row["x_gt"],
+                recon=row["adv_pred"],
+                e_ran=row["e_ran_adv"],
+                e_nul=row["e_nul_adv"],
+                out_path=out_dir / f"decomp_adv_{idx:03d}.png",
+                title=f"Adversarial — error decomposition (example {idx})",
+            )
+
     print("finished save")
 
 
@@ -874,6 +894,12 @@ def main() -> None:
                 remaining_slots = args.save_examples - len(example_rows)
                 if remaining_slots > 0:
                     for i in range(min(x_gt.shape[0], remaining_slots)):
+                        e_ran_clean, e_nul_clean = decompose_error(
+                            clean_pred[i: i + 1] - x_gt[i: i + 1], radon
+                        )
+                        e_ran_adv, e_nul_adv = decompose_error(
+                            adv_pred[i: i + 1] - x_gt[i: i + 1], radon
+                        )
                         example_rows.append(
                             {
                                 "x_gt": to_numpy_img(x_gt[i]),
@@ -884,6 +910,10 @@ def main() -> None:
                                 "clean_y": to_numpy_img(y_clean[i]),
                                 "adv_y": to_numpy_img(y_adv[i]),
                                 "delta": to_numpy_img(attack_result.delta[i]),
+                                "e_ran_clean": e_ran_clean.squeeze().numpy(),
+                                "e_nul_clean": e_nul_clean.squeeze().numpy(),
+                                "e_ran_adv": e_ran_adv.squeeze().numpy(),
+                                "e_nul_adv": e_nul_adv.squeeze().numpy(),
                             }
                         )
 

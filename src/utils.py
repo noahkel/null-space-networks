@@ -5,6 +5,8 @@ from src.unet import UNet
 from src.wrappers import RESNET, NSN, DPNSN, DPNSN_RES
 from typing import List, Union, Dict
 from src.radon import _RadonBase
+from src.radon_matrix import MatrixRadonAdapter
+
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import math
@@ -255,14 +257,21 @@ def decompose_error(
     tol: float = 1e-6,
 ) -> tuple:
     """
-    Orthogonal decomposition of image-space error e via conjugate gradient:
+    Orthogonal decomposition of image-space error e:
 
       e_ran = A_la^+ A_la e   — projection onto range(A_la^T)
       e_nul = e - e_ran       — null-space component
 
-    Solves  A_la^T A_la x = A_la^T A_la e  by CG starting from x=0.
+    When radon is a MatrixRadonAdapter with LA pseudoinverse factors built
+    (svd_rank > 0 and phi set at construction), uses two sparse matrix
+    multiplications instead of CG. Otherwise falls back to CG.
     Returns (e_ran, e_nul) as detached CPU tensors.
     """
+    if isinstance(radon, MatrixRadonAdapter) and hasattr(radon, '_la_pinv_V'):
+        e_ran = radon.pseudoinverse_la(radon.forward_la(e))
+        e_ran = e_ran.detach().cpu()
+        e_nul = (e.cpu() - e_ran)
+        return e_ran, e_nul
     def AtA(x: torch.Tensor) -> torch.Tensor:
         return radon.backward_la(radon.forward_la(x))
 
