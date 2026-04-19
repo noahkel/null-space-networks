@@ -636,7 +636,6 @@ def save_examples(
         plt.savefig(out_dir / f"example_{idx:03d}.png", dpi=160)
         plt.close(fig)
 
-
         if "e_ran_clean" in row:
             visualise_decomposition(
                 gt=row["x_gt"],
@@ -678,7 +677,6 @@ def save_examples(
             plt.tight_layout()
             plt.savefig(out_dir / f"range_diff_{idx:03d}.png", dpi=150)
             plt.close(fig)
-
     print("finished save")
 
 
