@@ -263,7 +263,7 @@ def decompose_error(
       e_nul = e - e_ran       — null-space component
 
     When radon is a MatrixRadonAdapter with LA pseudoinverse factors built
-    (svd_rank > 0 and phi set at construction), uses two sparse matrix
+    (svd_threshold > 0 and phi set at construction), uses two sparse matrix
     multiplications instead of CG. Otherwise falls back to CG.
     Returns (e_ran, e_nul) as detached CPU tensors.
     """

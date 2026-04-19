@@ -22,6 +22,7 @@ import math
 import warnings
 import numpy as np
 import torch
+import scipy.linalg
 import scipy.sparse
 import scipy.sparse.linalg
 from typing import Optional, Tuple, Union
@@ -61,8 +62,10 @@ class MatrixRadonAdapter(_RadonBase):
         Floating-point dtype.
     phi : (float, float) or None
         Limited-angle window ``[lo, hi)`` in radians.
-    svd_rank : int
-        If > 0, compute a truncated SVD of A with this many singular values
+    svd_threshold : float
+        If > 0, compute a full SVD of A and retain singular values >= this
+        threshold.  The retained vectors are stored as pseudoinverse factors
+        used by ``pseudoinverse`` / ``pseudoinverse_la`` / ``proj_null_image``.
 
     Notes
     -----
@@ -83,7 +86,7 @@ class MatrixRadonAdapter(_RadonBase):
         device: Optional[torch.device] = None,
         dtype: torch.dtype = torch.float64,
         phi: Optional[Tuple[float, float]] = None,
-        svd_rank: int = 0,
+        svd_threshold: float = 0.0,
     ):
         try:
             import astra as _astra
@@ -101,7 +104,7 @@ class MatrixRadonAdapter(_RadonBase):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = dtype
         self.phi = phi
-        self.svd_rank = int(svd_rank)
+        self.svd_threshold = float(svd_threshold)
         self.norm_A: Optional[float] = None
         self.norm_A2: Optional[float] = None
 
@@ -159,7 +162,7 @@ class MatrixRadonAdapter(_RadonBase):
         # csr shape: (n_angles * det_count, resolution**2)
         csr = csr.astype(np.float64)
 
-        if self.svd_rank > 0:
+        if self.svd_threshold > 0:
             self._build_pseudoinverse(csr)
             if self.phi is not None:
                 ang_mask = ((self.angles >= self.phi[0]) & (self.angles < self.phi[1]))
@@ -172,43 +175,66 @@ class MatrixRadonAdapter(_RadonBase):
         print("Built sparse Matrix")
         return A, AT
 
+    @staticmethod
+    def _full_svd_threshold(
+            csr: scipy.sparse.csr_matrix, threshold: float
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Compute a full thin SVD of ``csr`` (converted to dense) and return only
+        the components whose singular value >= ``threshold``.
+
+        Returns U_k, s_k, Vt_k in descending singular-value order.
+        """
+        dense = csr.toarray().astype(np.float64)
+        m, n = dense.shape
+        mem_gb = dense.nbytes / 1e9
+        if mem_gb > 4.0:
+            warnings.warn(
+                f"SVD of {m}×{n} dense matrix ({mem_gb:.1f} GB) may be slow. "
+                "Consider reducing the problem size or using a coarser threshold.",
+                UserWarning,
+                stacklevel=3,
+            )
+        # thin SVD: U (m,k), s (k,), Vt (k,n) where k = min(m,n)
+        U, s, Vt = scipy.linalg.svd(dense, full_matrices=False)
+        mask = s >= threshold
+        kept = int(mask.sum())
+        print(f"  SVD: {len(s)} singular values computed, {kept} >= {threshold:.2e} retained")
+        return U[:, mask], s[mask], Vt[mask, :]
+
     def _build_pseudoinverse(self, csr: scipy.sparse.csr_matrix) -> None:
         """
-        Compute truncated SVD of A and store the pseudoinverse factors.
+        Compute full SVD of A, retain singular values >= svd_threshold, and
+        store pseudoinverse factors.
 
-        Stores three dense tensors used by `pseudoinverse`:
-          _pinv_V   : (resolution**2, svd_rank)  — right singular vectors
-          _pinv_Ut  : (svd_rank, n_angles*det_count) — left singular vectors (transposed)
-          _pinv_inv_s : (svd_rank,) — reciprocal singular values
-
-        The pseudoinverse is A^+ = V_k @ diag(1/sigma_k) @ U_k^T, applied as
-        three successive matrix multiplies rather than materialised as a dense matrix.
+         Stores:
+          _pinv_V      : (resolution**2, k)        — right singular vectors
+          _pinv_Ut     : (k, n_angles*det_count)   — left singular vectors (transposed)
+          _pinv_inv_s  : (k,)                      — reciprocal singular values
         """
-        U, s, Vt = scipy.sparse.linalg.svds(csr, k=self.svd_rank)
-        # svds returns singular values in ascending order — reverse to descending
-        U  = U[:, ::-1].copy()
-        s  = s[::-1].copy()
-        Vt = Vt[::-1, :].copy()
-
-        self._pinv_V    = torch.from_numpy(Vt.T.astype(np.float64)).to(device=self.device, dtype=self.dtype)
-        self._pinv_Ut   = torch.from_numpy(U.T.astype(np.float64)).to(device=self.device, dtype=self.dtype)
+        print("Building full pseudoinverse (A)...")
+        U, s, Vt = self._full_svd_threshold(csr, self.svd_threshold)
+        self._pinv_V = torch.from_numpy(Vt.T.astype(np.float64)).to(device=self.device, dtype=self.dtype)
+        self._pinv_Ut = torch.from_numpy(U.T.astype(np.float64)).to(device=self.device, dtype=self.dtype)
         self._pinv_inv_s = torch.from_numpy((1.0 / s).astype(np.float64)).to(device=self.device, dtype=self.dtype)
+
 
     def _build_pseudoinverse_la(self, csr_la: scipy.sparse.csr_matrix) -> None:
         """
-        Compute truncated SVD of the limited-angle submatrix A_la and store
-        pseudoinverse factors used by `pseudoinverse_la`.
+        Compute full SVD of A_la (measured-angle submatrix), retain singular
+        values >= svd_threshold, and store pseudoinverse factors.
 
         A_la is the submatrix of A whose rows correspond to measured angles only.
         Stores:
-          _la_pinv_V      : (resolution**2, svd_rank)
-          _la_pinv_Ut     : (svd_rank, n_la_angles*det_count)
-          _la_pinv_inv_s  : (svd_rank,)
+          _la_pinv_V      : (resolution**2, k)
+          _la_pinv_Ut     : (k, n_la_angles*det_count)
+          _la_pinv_inv_s  : (k,)
         """
-        U, s, Vt = scipy.sparse.linalg.svds(csr_la, k=self.svd_rank)
-        U = U[:, ::-1].copy()
-        s = s[::-1].copy()
-        Vt = Vt[::-1, :].copy()
+        print("Building limited-angle pseudoinverse (A_la)...")
+        U, s, Vt = self._full_svd_threshold(csr_la, self.svd_threshold)
+        self._la_pinv_V = torch.from_numpy(Vt.T.astype(np.float64)).to(device=self.device, dtype=self.dtype)
+        self._la_pinv_Ut = torch.from_numpy(U.T.astype(np.float64)).to(device=self.device, dtype=self.dtype)
+        self._la_pinv_inv_s = torch.from_numpy((1.0 / s).astype(np.float64)).to(device=self.device, dtype=self.dtype)
 
         self._la_pinv_V = torch.from_numpy(Vt.T.astype(np.float64)).to(device=self.device, dtype=self.dtype)
         self._la_pinv_Ut = torch.from_numpy(U.T.astype(np.float64)).to(device=self.device, dtype=self.dtype)
@@ -290,7 +316,7 @@ class MatrixRadonAdapter(_RadonBase):
         """
         if not hasattr(self, '_pinv_V'):
             raise RuntimeError(
-                "Pseudoinverse factors not built. Pass svd_rank > 0 at construction."
+                "Pseudoinverse factors not built. Pass svd_threshold > 0 at construction."
             )
         B, C, n_a, nd = y.shape
         y_flat = (y / self.dx).reshape(B * C, n_a * nd).to(dtype=self.dtype, device=self.device)
@@ -320,7 +346,7 @@ class MatrixRadonAdapter(_RadonBase):
         """
         if not hasattr(self, '_la_pinv_V'):
             raise RuntimeError(
-                "LA pseudoinverse factors not built. Pass svd_rank > 0 and phi at construction."
+                "LA pseudoinverse factors not built. Pass svd_threshold > 0 and phi at construction."
             )
         orig_device = y.device
         orig_dtype = y.dtype
@@ -338,3 +364,13 @@ class MatrixRadonAdapter(_RadonBase):
         x_flat = self._la_pinv_V @ intermediate  # (res^2, B*C)
 
         return x_flat.t().reshape(B, C, self.resolution, self.resolution).to(device=orig_device, dtype=orig_dtype)
+
+    def proj_null_image(self, v: torch.Tensor) -> torch.Tensor:
+        """Project image v onto null(A_la): v - A_la^+ A_la v (exact via SVD).
+
+        Falls back to the CG-based base implementation if svd_threshold was 0
+        at construction (i.e. LA pseudoinverse factors were not built).
+        """
+        if not hasattr(self, '_la_pinv_V'):
+            return super().proj_null_image(v)
+        return v - self.pseudoinverse_la(self.forward_la(v))

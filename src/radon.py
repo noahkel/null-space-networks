@@ -202,6 +202,36 @@ class _RadonBase:
         """Project onto the 'range' (selected) angle set: y * ran_mask."""
         return y * self._ran_mask.to(device=y.device, dtype=y.dtype)
 
+    def proj_null_image(self, v: torch.Tensor, iters: int = 50, tol: float = 1e-6) -> torch.Tensor:
+        """
+        Project image v onto null(A_la): returns v - A_la^+ A_la v.
+
+        Uses conjugate gradients to solve A_la^T A_la x = A_la^T v, then
+        returns v - x. Differentiable; subclasses may override with a faster
+        exact implementation (e.g. via truncated SVD factors).
+        """
+
+        def AtA(x: torch.Tensor) -> torch.Tensor:
+            return self.backward_la(self.forward_la(x))
+
+        b = AtA(v)
+        x = torch.zeros_like(v)
+        r = b.clone()
+        p = r.clone()
+        rr = (r * r).sum()
+
+        for _ in range(iters):
+            if rr.item() < tol ** 2:
+                break
+            Ap = AtA(p)
+            alpha = rr / (p * Ap).sum().clamp_min(1e-12)
+            x = x + alpha * p
+            r = r - alpha * Ap
+            rr_new = (r * r).sum()
+            p = r + (rr_new / rr.clamp_min(1e-12)) * p
+            rr = rr_new
+
+        return v - x
     # ------------------------------------------------------------------
     # Operator norm estimation
     # ------------------------------------------------------------------
