@@ -10,6 +10,7 @@ import argparse
 from src.radon import AstraRadonAdapter
 from src.radon_matrix import MatrixRadonAdapter
 from src.utils import mse_loss, set_seed, to_4d, build_models, save_example_outputs
+from typing import List
 
 from src.ellipse_dataloader import get_ellipse_dataloader
 
@@ -61,29 +62,25 @@ def eval_one_epoch(
     return running / max(n, 1)
 
 
-def main(example):
-    DATA_ROOT = f"/scratch/noah/data/{example}_out"
-    OUT_DIR = Path(f"/scratch/noah/models/runs_{example}")
+def main(example, out_dir, data_dir, models, init_methods):
+    set_seed(42)
+
+
+    DATA_ROOT = data_dir
+    OUT_DIR = out_dir
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    set_seed(42)
 
-    INIT_METHODS = ["fbp"] #"tv", "lw", "fbp"]
-    MODELS_TO_TRAIN = ["resnet", "nsn", "dpnsn", "dpnsn_res"]
-
-    # INIT_METHODS = ["lw", "tv"]
-    # MODELS_TO_TRAIN = ["dpnsn"]
-
-    # INIT_METHODS = ["tv", "lw"]
-    # MODELS_TO_TRAIN = ["dpnsn_huber"]
+    INIT_METHODS = init_methods
+    MODELS_TO_TRAIN = models
 
     EPOCHS = 50
     BATCH_SIZE = 32
     LR = 1e-4
     NUM_WORKERS = 4
 
-    summary_path = Path(DATA_ROOT) / "summary.json"
+    summary_path = DATA_ROOT / "summary.json"
     print(summary_path)
     with open(summary_path, "r") as f:
         summary = json.load(f)
@@ -233,15 +230,26 @@ def main(example):
             )
             print(f"[init={init} | {name}] example saved to {ex_path}")
 
+def parse_list_arg(value: str) -> List[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 if __name__ == "__main__":
     #Initialization of parameters
     parser = argparse.ArgumentParser()
     parser.add_argument("--type", type=str)
+    parser.add_argument("--out_dir", type=str, default='./')
+    parser.add_argument("--data_dir", type=str, default='./')
+    parser.add_argument("--models", type=str, default="resnet,nsn,dpnsn,dpnsn_res")
+    parser.add_argument("--init_method", type=str, default="fbp")
+
     #Setup Args
     args = parser.parse_args()
+    model_names = parse_list_arg(args.models)
+    out_dir = Path(args.out_dir)
+    data_dir = Path(args.data_dir)
+    init_methods = parse_list_arg(args.init_method)
     type = args.type
-    main(example=type)
+    main(example=type, out_dir=out_dir, data_dir=data_dir, models=model_names, init_methods=init_methods)
     print("Finished.")
 
 # sbatch -p a6000 -w mp-gpu4-a6000-2 --job-name=train -o logs/train.txt --time=30-00:00:00 --wrap="python -u main.py"

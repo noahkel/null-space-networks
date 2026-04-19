@@ -44,44 +44,21 @@ TYPE="ellipses"
 
 # ── Data Generation (MatrixRadonAdapter, matrix_mode=1) ──────────────────────
 
-python -u create_ellipse_data.py \
-    --img_size $IMG_SIZE \
-    --noise $NOISE \
-    --min_angle $MIN_ANGLE \
-    --max_angle $MAX_ANGLE \
-    --num_thetas $NUM_THETAS \
-    --n_samples $N_SAMPLES \
-    --matrix_mode 1
+python -u create_ellipse_data.py --img_size $IMG_SIZE --noise $NOISE --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR --models resnet,nsn,dpnsn,dpnsn_res
 
 echo "Finished Data Generation at: $(date)"
 
-BETA=$(python -c "import json;print(json.load(open('$DATA_DIR/summary.json'))['mean_norm_y_minus_y_delta'])")
-echo "BETA=$BETA"
-
-
 # ── Training (adapter chosen from summary.json matrix_mode) ──────────────────
 
-python -u train.py --type $TYPE
+python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR --models resnet,nsn,dpnsn,dpnsn_res --init_method fbp
 
 echo "Finished Training at: $(date)"
 
-
 # ── Adversarial Attacks ───────────────────────────────────────────────────────
-#,dpnsn,dpnsn_res \
-python -u attack.py \
-    --type $TYPE \
-    --init fbp \
-    --models resnet,nsn,dpnsn,dpnsn_res \
-    --attacks adam \
-    --norm l2 \
-    --eps 1.0 \
-    --alpha 0.5 \
-    --steps 40 \
-    --data-root $DATA_DIR \
-    --model-dir $MODEL_DIR
+
+python -u attack.py --type $TYPE --init fbp --models resnet,nsn,dpnsn,dpnsn_res --attacks adam --norm l2 --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR --model-dir $MODEL_DIR
 
 echo "Finished Adversarial Attack at: $(date)"
-
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo "Job finished at $(date)"
