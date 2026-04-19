@@ -258,23 +258,6 @@ def main():
 
 
 if __name__ == "__main__":
-    from src.utils import visualise_example
     import json
-
-    OUT_DIR = Path("/scratch/noah/data/ellipses_out")
     main()
-
-    # Visualise the first saved sample so the setup can be inspected immediately
-    idx = 0
-    gt   = np.load(OUT_DIR / "gt"  / f"{idx:05d}.npy")
-    sino = np.load(OUT_DIR / "sino" / f"{idx:05d}.npy")
-    fbp  = np.load(OUT_DIR / "fbp" / f"{idx:05d}.npy")
-
-    with open(OUT_DIR / "summary.json") as f:
-        summary = json.load(f)
-    phi_deg = summary.get("phi_deg", [None, None])
-    title = f"Ellipse phantom — phi [{phi_deg[0]}°, {phi_deg[1]}°], noise {summary['noise_sigma_rel']}"
-
-    visualise_example(gt, sino, fbp, OUT_DIR / "example.png", title=title)
-    print(f"Saved visualisation to {OUT_DIR / 'example.png'}")
 

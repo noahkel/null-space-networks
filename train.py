@@ -240,14 +240,14 @@ if __name__ == "__main__":
     parser.add_argument("--out_dir", type=str, default='./')
     parser.add_argument("--data_dir", type=str, default='./')
     parser.add_argument("--models", type=str, default="resnet,nsn,dpnsn,dpnsn_res")
-    parser.add_argument("--init_method", type=str, default="fbp")
+    parser.add_argument("--init", type=str, default="fbp")
 
     #Setup Args
     args = parser.parse_args()
     model_names = parse_list_arg(args.models)
     out_dir = Path(args.out_dir)
     data_dir = Path(args.data_dir)
-    init_methods = parse_list_arg(args.init_method)
+    init_methods = parse_list_arg(args.init)
     type = args.type
     main(example=type, out_dir=out_dir, data_dir=data_dir, models=model_names, init_methods=init_methods)
     print("Finished.")
