@@ -654,30 +654,31 @@ def save_examples(
                 out_path=out_dir / f"decomp_adv_{idx:03d}.png",
                 title=f"Adversarial — error decomposition (example {idx})",
             )
-    e_ran_c = row["e_ran_clean"]
-    e_ran_a = row["e_ran_adv"]
-    e_ran_diff = e_ran_a - e_ran_c
-    e_abs = max(np.abs(e_ran_c).max(), np.abs(e_ran_a).max(), 1e-12)
-    diff_abs = max(np.abs(e_ran_diff).max(), 1e-12)
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    panels = [
-        (e_ran_c, f"e_ran clean  ‖·‖={np.linalg.norm(e_ran_c.ravel()):.3f}", e_abs),
-        (e_ran_a, f"e_ran adv    ‖·‖={np.linalg.norm(e_ran_a.ravel()):.3f}", e_abs),
-        (e_ran_diff, f"Δe_ran (adv − clean)  ‖·‖={np.linalg.norm(e_ran_diff.ravel()):.3f}", diff_abs),
-    ]
-    for ax, (img, title, vabs) in zip(axes, panels):
-        im = ax.imshow(img, cmap="RdBu_r", vmin=-vabs, vmax=vabs)
-        ax.set_title(title, fontsize=9)
-        ax.axis("off")
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    fig.suptitle(
-        f"Range-space error shift (example {idx}) — "
-        "should equal proj_range(FBP(δ)) for NSN",
-        fontsize=9,
-    )
-    plt.tight_layout()
-    plt.savefig(out_dir / f"range_diff_{idx:03d}.png", dpi=150)
-    plt.close(fig)
+            e_ran_c = row["e_ran_clean"]
+            e_ran_a = row["e_ran_adv"]
+            e_ran_diff = e_ran_a - e_ran_c
+            e_abs = max(np.abs(e_ran_c).max(), np.abs(e_ran_a).max(), 1e-12)
+            diff_abs = max(np.abs(e_ran_diff).max(), 1e-12)
+            fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+            panels = [
+                (e_ran_c, f"e_ran clean  ‖·‖={np.linalg.norm(e_ran_c.ravel()):.3f}", e_abs),
+                (e_ran_a, f"e_ran adv    ‖·‖={np.linalg.norm(e_ran_a.ravel()):.3f}", e_abs),
+                (e_ran_diff, f"Δe_ran (adv − clean)  ‖·‖={np.linalg.norm(e_ran_diff.ravel()):.3f}", diff_abs),
+            ]
+            for ax, (img, title, vabs) in zip(axes, panels):
+                im = ax.imshow(img, cmap="RdBu_r", vmin=-vabs, vmax=vabs)
+                ax.set_title(title, fontsize=9)
+                ax.axis("off")
+                fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            fig.suptitle(
+                f"Range-space error shift (example {idx}) — "
+                "should equal proj_range(FBP(δ)) for NSN",
+                fontsize=9,
+            )
+            plt.tight_layout()
+            plt.savefig(out_dir / f"range_diff_{idx:03d}.png", dpi=150)
+            plt.close(fig)
+
     print("finished save")
 
 
