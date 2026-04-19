@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from collections import defaultdict
 from src.ellipse_dataloader import get_ellipse_dataloader
 from src.landweber import landweber
 from src.radon import AstraRadonAdapter
@@ -664,6 +665,13 @@ def save_examples(
                 (e_ran_a, f"e_ran adv    ‖·‖={np.linalg.norm(e_ran_a.ravel()):.3f}", e_abs),
                 (e_ran_diff, f"Δe_ran (adv − clean)  ‖·‖={np.linalg.norm(e_ran_diff.ravel()):.3f}", diff_abs),
             ]
+            if "proj_ran_fbp_delta" in row:
+                p = row["proj_ran_fbp_delta"]
+                panels.append((p, f"proj_ran(FBP(δ))  ‖·‖={np.linalg.norm(p.ravel()):.3f}", diff_abs))
+            ncols = len(panels)
+            fig, axes = plt.subplots(1, ncols, figsize=(4 * ncols, 4))
+            if ncols == 1:
+                axes = [axes]
             for ax, (img, title, vabs) in zip(axes, panels):
                 im = ax.imshow(img, cmap="RdBu_r", vmin=-vabs, vmax=vabs)
                 ax.set_title(title, fontsize=9)
@@ -679,7 +687,31 @@ def save_examples(
             plt.close(fig)
     print("finished save")
 
-
+def save_scatter_plot(
+    out_dir: Path,
+    rows_by_model: Dict[str, List[Dict]],
+    x_key: str = "clean_rel_l2",
+    y_key: str = "adv_rel_l2",
+) -> None:
+    if not rows_by_model:
+        return
+    fig, ax = plt.subplots(figsize=(7, 6))
+    colors = plt.cm.tab10.colors
+    for i, (model_name, rows) in enumerate(rows_by_model.items()):
+        xs = [r[x_key] for r in rows if x_key in r and y_key in r]
+        ys = [r[y_key] for r in rows if x_key in r and y_key in r]
+        if xs:
+            ax.scatter(xs, ys, label=model_name, s=20, alpha=0.7, color=colors[i % len(colors)])
+    lim_lo = min(ax.get_xlim()[0], ax.get_ylim()[0])
+    lim_hi = max(ax.get_xlim()[1], ax.get_ylim()[1])
+    ax.plot([lim_lo, lim_hi], [lim_lo, lim_hi], "k--", lw=1, alpha=0.5, label="y = x")
+    ax.set_xlabel(f"Clean error ({x_key})")
+    ax.set_ylabel(f"Adv error ({y_key})")
+    ax.set_title("Clean vs Adversarial Error per Sample & Network")
+    ax.legend(fontsize=8)
+    plt.tight_layout()
+    plt.savefig(out_dir / "scatter_clean_vs_adv.png", dpi=150)
+    plt.close(fig)
 def summarize_metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
     metrics: Dict[str, float] = {"num_examples": len(rows)}
     if not rows:
@@ -870,6 +902,7 @@ def main() -> None:
     config["summary_path"] = str(Path(f"{example}_out") / "summary.json")
     with open(out_root / "config.json", "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
+    scatter_rows: Dict[str, Dict[str, List[Dict]]] = defaultdict(dict)
 
     for model_name in model_names:
         print("loading " + model_name)
@@ -954,6 +987,8 @@ def main() -> None:
                         e_ran_adv, e_nul_adv = decompose_error(
                             adv_pred[i: i + 1] - x_gt[i: i + 1], radon
                         )
+                        fbp_delta = radon.fbp_la(attack_result.delta[i: i + 1])
+                        e_ran_fbp_d, _ = decompose_error(fbp_delta, radon)
                         example_rows.append(
                             {
                                 "x_gt": to_numpy_img(x_gt[i]),
@@ -968,6 +1003,8 @@ def main() -> None:
                                 "e_nul_clean": e_nul_clean.squeeze().numpy(),
                                 "e_ran_adv": e_ran_adv.squeeze().numpy(),
                                 "e_nul_adv": e_nul_adv.squeeze().numpy(),
+                                "proj_ran_fbp_delta": e_ran_fbp_d.squeeze().numpy(),
+
                             }
                         )
 
@@ -995,12 +1032,18 @@ def main() -> None:
                     writer.writeheader()
                     writer.writerows(rows)
             save_examples(result_dir, example_rows)
+            scatter_rows[attack_name][model_name] = rows
+
             print(
                 f"[model={model_name} attack={attack_name}] "
                 f"n={len(rows)} adv_rel_l2={summary_metrics.get('adv_rel_l2_mean', float('nan')):.4f} "
                 f"success_rel_l2={summary_metrics.get('success_rel_l2_mean', float('nan')):.3f}"
                 f"clean_rel_l2={summary_metrics.get('clean_rel_l2_mean', float('nan')):.3f}"
             )
+            for attack_name, rows_by_model in scatter_rows.items():
+                scatter_dir = out_root / attack_name
+                scatter_dir.mkdir(parents=True, exist_ok=True)
+                save_scatter_plot(scatter_dir, rows_by_model)
 
 if __name__ == "__main__":
     main()
