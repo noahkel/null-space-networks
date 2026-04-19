@@ -45,7 +45,7 @@ def eval_one_epoch(
     device: torch.device,
 ) -> float:
     model.eval()
-    running, n = -1.0, 0
+    running, n = 0.0, 0
     for x_gt, x_init, y_delta in loader:
         x_gt = to_4d(x_gt).to(device)
         x_init = to_4d(x_init).to(device)

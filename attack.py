@@ -119,7 +119,8 @@ class InitReconstructor:
         self.tau = 1.0 / max(self.l_value, 1e-6)
         self.sigma = 1.0 / max(self.l_value, 1e-6)
         self.theta = 1.0
-        self.tv_alpha = float(summary.get("tv_best_alpha") or 0.0)
+        _tv_alpha = summary.get("tv_best_alpha")
+        self.tv_alpha = float(_tv_alpha) if _tv_alpha not in (None, "None") else 0.0
         self.tv_iters = int(summary.get("tv_iters_final") or 0)
         self.lw_iters = int(summary.get("lw_iters") or 0)
         self.lw_omega = float(summary.get("lw_omega") or 1.0 / max(self.l_value, 1e-6))
@@ -767,7 +768,7 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--n-train", type=int, default=4000)
     parser.add_argument("--n-test", type=int, default=1000)
-    parser.add_argument("--max-samples", type=int, default=8)
+    parser.add_argument("--max-samples", type=int, default=32)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--success-rel-l2-factor", type=float, default=1.5)
     parser.add_argument("--success-mse-factor", type=float, default=2.0)
