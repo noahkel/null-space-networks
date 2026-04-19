@@ -66,11 +66,11 @@ echo "Finished Training at: $(date)"
 
 
 # ── Adversarial Attacks ───────────────────────────────────────────────────────
-
+#,dpnsn,dpnsn_res \
 python -u attack.py \
     --type $TYPE \
     --init fbp \
-    --models resnet,nsn,dpnsn,dpnsn_res \
+    --models resnet,nsn \
     --attacks adam \
     --norm l2 \
     --eps 1.0 \
