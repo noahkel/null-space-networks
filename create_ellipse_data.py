@@ -130,7 +130,8 @@ def main():
             det_count=DET_COUNT,
             dx=dx,
             phi=phi,
-            device=DEVICE
+            device=DEVICE,
+            cache_dir="radon_cache",
         )
     L = radon.norm_A2
     tau, sigma = 1/L, 1/L
