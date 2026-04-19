@@ -43,14 +43,14 @@ TYPE="ellipses"
 
 
 # ── Data Generation (MatrixRadonAdapter, matrix_mode=1) ──────────────────────
-python -u create_ellipse_data.py \
-    --img_size $IMG_SIZE \
-    --noise $NOISE \
-    --min_angle $MIN_ANGLE \
-    --max_angle $MAX_ANGLE \
-    --num_thetas $NUM_THETAS \
-    --n_samples $N_SAMPLES \
-    --matrix_mode 1
+#python -u create_ellipse_data.py \
+#    --img_size $IMG_SIZE \
+#    --noise $NOISE \
+#    --min_angle $MIN_ANGLE \
+#    --max_angle $MAX_ANGLE \
+#    --num_thetas $NUM_THETAS \
+#    --n_samples $N_SAMPLES \
+#    --matrix_mode 1
 
 echo "Finished Data Generation at: $(date)"
 
@@ -60,7 +60,7 @@ echo "BETA=$BETA"
 
 # ── Training (adapter chosen from summary.json matrix_mode) ──────────────────
 
-python -u train.py --type $TYPE
+#python -u train.py --type $TYPE
 
 echo "Finished Training at: $(date)"
 
