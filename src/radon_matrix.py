@@ -18,6 +18,7 @@ Usage
     x = adapter.backward(y)  # (B, C, resolution, resolution)
 """
 
+import hashlib
 import math
 import warnings
 import numpy as np
@@ -25,6 +26,7 @@ import torch
 import scipy.linalg
 import scipy.sparse
 import scipy.sparse.linalg
+from pathlib import Path
 from typing import Optional, Tuple, Union
 
 from src.radon import _RadonBase, filter_sinogram
@@ -87,14 +89,8 @@ class MatrixRadonAdapter(_RadonBase):
         dtype: torch.dtype = torch.float64,
         phi: Optional[Tuple[float, float]] = None,
         svd_threshold: float = 0.0,
+        cache_dir: Optional[Union[str, Path]] = None,
     ):
-        try:
-            import astra as _astra
-        except ImportError:
-            raise ImportError(
-                "astra-toolbox is required. Install with:\n"
-                "  conda install -c astra-toolbox astra-toolbox"
-            )
 
         self.resolution = int(resolution)
         self.det_count = int(det_count)
@@ -125,8 +121,23 @@ class MatrixRadonAdapter(_RadonBase):
         self._nsn_mask = torch.from_numpy(self._nsn_mask_np).to(device=self.device, dtype=self.dtype)
 
         # Precompute system matrix
-        self._A, self._AT = self._build_sparse_matrix(_astra)
-
+        # Build or load system matrix (and SVD factors if svd_threshold > 0)
+        cache_path = Path(cache_dir) / self._cache_key() if cache_dir is not None else None
+        if cache_path is not None and cache_path.exists():
+            print(f"Loading matrix cache from {cache_path}")
+            self._load_cache(cache_path)
+        else:
+            try:
+                import astra as _astra
+            except ImportError:
+                raise ImportError(
+                    "astra-toolbox is required. Install with:\n"
+                    "  conda install -c astra-toolbox astra-toolbox"
+                )
+            self._A, self._AT = self._build_sparse_matrix(_astra)
+            if cache_path is not None:
+                print(f"Saving matrix cache to {cache_path}")
+                self._save_cache(cache_path)
         if estimate_norm:
             self._estimate_operator_norm(iters=norm_iters)
 
@@ -173,6 +184,48 @@ class MatrixRadonAdapter(_RadonBase):
         print("Built sparse Matrix")
         return A, AT
 
+    # ------------------------------------------------------------------
+    # Cache key / save / load
+    # ------------------------------------------------------------------
+
+    def _cache_key(self) -> str:
+        h = hashlib.sha256()
+        h.update(str(self.resolution).encode())
+        h.update(str(self.det_count).encode())
+        h.update(repr(self.dx).encode())
+        h.update(repr(self.phi).encode())
+        h.update(repr(self.svd_threshold).encode())
+        h.update(self.angles.tobytes())
+        return h.hexdigest()[:16]
+
+    def _save_cache(self, path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+
+        # Convert sparse tensors back to scipy for compact storage
+        def _torch_csr_to_scipy(t: torch.Tensor) -> scipy.sparse.csr_matrix:
+            t = t.cpu()
+            return scipy.sparse.csr_matrix(
+                (t.values().numpy(), t.col_indices().numpy(), t.crow_indices().numpy()),
+                shape=t.shape,
+            )
+
+        scipy.sparse.save_npz(str(path / "A.npz"), _torch_csr_to_scipy(self._A))
+        if hasattr(self, "_la_pinv_V"):
+            np.save(str(path / "la_pinv_V.npy"), self._la_pinv_V.cpu().numpy())
+            np.save(str(path / "la_pinv_Ut.npy"), self._la_pinv_Ut.cpu().numpy())
+            np.save(str(path / "la_pinv_inv_s.npy"), self._la_pinv_inv_s.cpu().numpy())
+
+    def _load_cache(self, path: Path) -> None:
+        csr = scipy.sparse.load_npz(str(path / "A.npz")).astype(np.float64)
+        self._A = self._scipy_csr_to_torch(csr)
+        self._AT = self._scipy_csr_to_torch(csr.T.tocsr())
+        la_v = path / "la_pinv_V.npy"
+        if la_v.exists():
+            self._la_pinv_V = torch.from_numpy(np.load(str(la_v))).to(device=self.device, dtype=self.dtype)
+            self._la_pinv_Ut = torch.from_numpy(np.load(str(path / "la_pinv_Ut.npy"))).to(device=self.device,
+                                                                                          dtype=self.dtype)
+            self._la_pinv_inv_s = torch.from_numpy(np.load(str(path / "la_pinv_inv_s.npy"))).to(device=self.device,
+                                                                                                dtype=self.dtype)
     @staticmethod
     def _full_svd_threshold(
             csr: scipy.sparse.csr_matrix, threshold: float

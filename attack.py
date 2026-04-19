@@ -474,7 +474,8 @@ def build_radon(summary: Dict, device: torch.device):
             device=device,
             dtype=torch.float32,
             phi=phi,
-            svd_threshold=1e-7
+            svd_threshold=1e-5,
+            cache_dir="radon_cache",
         )
     return AstraRadonAdapter(
         resolution=int(summary["img_size"]),
