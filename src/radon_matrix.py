@@ -98,7 +98,7 @@ class MatrixRadonAdapter(_RadonBase):
         self.angles = np.asarray(angles, dtype=np.float64)
         self.dx = float(dx)
         self.dataset = (dataset or "").lower()
-        self.device = torch.device("cpu") #device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = dtype
         self.phi = phi
         self.svd_rank = int(svd_rank)

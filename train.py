@@ -46,7 +46,9 @@ def eval_one_epoch(
 ) -> float:
     model.eval()
     running, n = 0.0, 0
+    print("before loop")
     for x_gt, x_init, y_delta in loader:
+        print("One loop")
         x_gt = to_4d(x_gt).to(device)
         x_init = to_4d(x_init).to(device)
         y_delta = to_4d(y_delta).to(device)
@@ -54,8 +56,22 @@ def eval_one_epoch(
         pred = model(x_init, y_delta)
         loss = mse_loss(pred, x_gt)
 
+        loss_val = float(loss.item())
+
+        if loss_val < 0 or loss_val != loss_val:  # negative or NaN
+            sq = (pred - x_gt) ** 2
+            print(f"[DEBUG] loss={loss_val:.6f}")
+            print(f"  pred : min={pred.min():.4f} max={pred.max():.4f} nan={pred.isnan().any()} inf={pred.isinf().any()}")
+            print(f"  x_gt : min={x_gt.min():.4f} max={x_gt.max():.4f} nan={x_gt.isnan().any()} inf={x_gt.isinf().any()}")
+            print(f"  sq   : min={sq.min():.6f} max={sq.max():.6f} mean={sq.mean():.6f}")
+
+
         running += float(loss.item()) * x_gt.shape[0]
         n += x_gt.shape[0]
+      	print(f"float(loss.item() {float(loss.item()}")
+        print(f"x_gt.shape[0] {x_gt.shape[0]}")
+        print("Test")
+
     return running / max(n, 1)
 
 
@@ -77,9 +93,9 @@ def main(example):
     # MODELS_TO_TRAIN = ["dpnsn_huber"]
 
     EPOCHS = 50
-    BATCH_SIZE = 16
+    BATCH_SIZE = 32
     LR = 1e-4
-    NUM_WORKERS = 1
+    NUM_WORKERS = 4
 
     summary_path = Path(DATA_ROOT) / "summary.json"
     print(summary_path)
@@ -112,7 +128,8 @@ def main(example):
             angles=angles,
             det_count=DET_COUNT,
             dx=dx,
-            phi=phi
+            phi=phi,
+            device=DEVICE
         )
     else:
         radon = AstraRadonAdapter(
@@ -120,7 +137,8 @@ def main(example):
             angles=angles,
             det_count=DET_COUNT,
             dx=dx,
-            phi=phi
+            phi=phi,
+            device=DEVICE
         )
 
     print(f"Loaded summary from {summary_path}")

@@ -4,9 +4,9 @@
   "models": "resnet,nsn,dpnsn,dpnsn_res",
   "attacks": "adam",
   "norm": "l2",
-  "eps": 5.0,
+  "eps": 1.0,
   "alpha": 0.5,
-  "steps": 500,
+  "steps": 40,
   "restarts": 3,
   "no_random_start": false,
   "objective": "mse",
@@ -18,7 +18,7 @@
   "num_workers": 0,
   "n_train": 4000,
   "n_test": 1000,
-  "max_samples": 8,
+  "max_samples": 32,
   "seed": 42,
   "success_rel_l2_factor": 1.5,
   "success_mse_factor": 2.0,
@@ -33,6 +33,6 @@
   "out_dir": null,
   "data_root": "/scratch/noah/data/ellipses_out",
   "model_dir": "/scratch/noah/models",
-  "device": "cpu",
+  "device": "cuda",
   "summary_path": "ellipses_out/summary.json"
 }
