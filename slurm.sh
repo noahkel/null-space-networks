@@ -41,8 +41,9 @@ NUM_THETAS=180
 N_SAMPLES=5000
 TYPE="ellipses"
 
-
+'''
 # ── Data Generation (MatrixRadonAdapter, matrix_mode=1) ──────────────────────
+
 python -u create_ellipse_data.py \
     --img_size $IMG_SIZE \
     --noise $NOISE \
@@ -63,7 +64,7 @@ echo "BETA=$BETA"
 python -u train.py --type $TYPE
 
 echo "Finished Training at: $(date)"
-
+'''
 
 # ── Adversarial Attacks ───────────────────────────────────────────────────────
 #,dpnsn,dpnsn_res \
