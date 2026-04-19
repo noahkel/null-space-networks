@@ -71,7 +71,7 @@ echo "Finished Training at: $(date)"
 python -u attack.py \
     --type $TYPE \
     --init fbp \
-    --models resnet,nsn \
+    --models resnet,nsn,dpnsn,dpnsn_res \
     --attacks adam \
     --norm l2 \
     --eps 1.0 \

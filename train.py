@@ -70,7 +70,7 @@ def main(example):
     set_seed(42)
 
     INIT_METHODS = ["fbp"] #"tv", "lw", "fbp"]
-    MODELS_TO_TRAIN = ["resnet", "nsn"]#, "dpnsn", "dpnsn_res"]
+    MODELS_TO_TRAIN = ["resnet", "nsn", "dpnsn", "dpnsn_res"]
 
     # INIT_METHODS = ["lw", "tv"]
     # MODELS_TO_TRAIN = ["dpnsn"]
