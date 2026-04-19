@@ -534,6 +534,7 @@ def evaluate_batch(
     delta: torch.Tensor,
     success_rel_l2_factor: float,
     success_mse_factor: float,
+    radon=None,
 ) -> List[Dict[str, float]]:
     rows: List[Dict[str, float]] = []
     batch_size = x_gt.shape[0]
@@ -561,29 +562,49 @@ def evaluate_batch(
         clean_mse = float(clean_mse_batch[i].item())
         adv_mse = float(adv_mse_batch[i].item())
 
-        rows.append(
-            {
-                "clean_mse": clean_mse,
-                "adv_mse": adv_mse,
-                "mse_ratio": adv_mse / max(clean_mse, 1e-12),
-                "clean_rel_l2": clean_rel_l2,
-                "adv_rel_l2": adv_rel_l2,
-                "rel_l2_ratio": adv_rel_l2 / max(clean_rel_l2, 1e-12),
-                "clean_psnr": psnr(clean_pred_np, gt_np),
-                "adv_psnr": psnr(adv_pred_np, gt_np),
-                "clean_ssim": ssim(clean_pred_np, gt_np),
-                "adv_ssim": ssim(adv_pred_np, gt_np),
-                "pred_shift_rel_l2": pred_shift,
-                "init_shift_rel_l2": init_shift,
-                "delta_l2": float(delta_l2_batch[i].item()),
-                "delta_linf": float(delta_linf_batch[i].item()),
-                "delta_mean_abs": float(sino_shift_batch[i].item()),
-                "clean_sino_l2": float(np.linalg.norm(clean_y_np.reshape(-1))),
-                "adv_sino_l2": float(np.linalg.norm(adv_y_np.reshape(-1))),
-                "success_rel_l2": float(adv_rel_l2 >= success_rel_l2_factor * max(clean_rel_l2, 1e-12)),
-                "success_mse": float(adv_mse >= success_mse_factor * max(clean_mse, 1e-12)),
-            }
-        )
+        row: Dict[str, float] = {
+            "clean_mse": clean_mse,
+            "adv_mse": adv_mse,
+            "mse_ratio": adv_mse / max(clean_mse, 1e-12),
+            "clean_rel_l2": clean_rel_l2,
+            "adv_rel_l2": adv_rel_l2,
+            "rel_l2_ratio": adv_rel_l2 / max(clean_rel_l2, 1e-12),
+            "clean_psnr": psnr(clean_pred_np, gt_np),
+            "adv_psnr": psnr(adv_pred_np, gt_np),
+            "clean_ssim": ssim(clean_pred_np, gt_np),
+            "adv_ssim": ssim(adv_pred_np, gt_np),
+            "pred_shift_rel_l2": pred_shift,
+            "init_shift_rel_l2": init_shift,
+            "delta_l2": float(delta_l2_batch[i].item()),
+            "delta_linf": float(delta_linf_batch[i].item()),
+            "delta_mean_abs": float(sino_shift_batch[i].item()),
+            "clean_sino_l2": float(np.linalg.norm(clean_y_np.reshape(-1))),
+            "adv_sino_l2": float(np.linalg.norm(adv_y_np.reshape(-1))),
+            "success_rel_l2": float(adv_rel_l2 >= success_rel_l2_factor * max(clean_rel_l2, 1e-12)),
+            "success_mse": float(adv_mse >= success_mse_factor * max(clean_mse, 1e-12)),
+        }
+
+        if radon is not None:
+            e_ran_c, e_nul_c = decompose_error(clean_pred[i: i + 1] - x_gt[i: i + 1], radon)
+            e_ran_a, e_nul_a = decompose_error(adv_pred[i: i + 1] - x_gt[i: i + 1], radon)
+            clean_e_l2 = max(float(np.linalg.norm((clean_pred_np - gt_np).ravel())), 1e-12)
+            adv_e_l2 = max(float(np.linalg.norm((adv_pred_np - gt_np).ravel())), 1e-12)
+            clean_e_ran_l2 = float(np.linalg.norm(e_ran_c.numpy().ravel()))
+            clean_e_nul_l2 = float(np.linalg.norm(e_nul_c.numpy().ravel()))
+            adv_e_ran_l2 = float(np.linalg.norm(e_ran_a.numpy().ravel()))
+            adv_e_nul_l2 = float(np.linalg.norm(e_nul_a.numpy().ravel()))
+            row.update({
+                "clean_e_ran_l2": clean_e_ran_l2,
+                "clean_e_nul_l2": clean_e_nul_l2,
+                "clean_e_ran_frac": clean_e_ran_l2 / max(clean_e_l2, 1e-12),
+                "clean_e_nul_frac": clean_e_nul_l2 / max(clean_e_l2, 1e-12),
+                "adv_e_ran_l2": adv_e_ran_l2,
+                "adv_e_nul_l2": adv_e_nul_l2,
+                "adv_e_ran_frac": adv_e_ran_l2 / max(adv_e_l2, 1e-12),
+                "adv_e_nul_frac": adv_e_nul_l2 / max(adv_e_l2, 1e-12),
+            })
+
+        rows.append(row)
 
     return rows
 
@@ -633,7 +654,30 @@ def save_examples(
                 out_path=out_dir / f"decomp_adv_{idx:03d}.png",
                 title=f"Adversarial — error decomposition (example {idx})",
             )
-
+    e_ran_c = row["e_ran_clean"]
+    e_ran_a = row["e_ran_adv"]
+    e_ran_diff = e_ran_a - e_ran_c
+    e_abs = max(np.abs(e_ran_c).max(), np.abs(e_ran_a).max(), 1e-12)
+    diff_abs = max(np.abs(e_ran_diff).max(), 1e-12)
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    panels = [
+        (e_ran_c, f"e_ran clean  ‖·‖={np.linalg.norm(e_ran_c.ravel()):.3f}", e_abs),
+        (e_ran_a, f"e_ran adv    ‖·‖={np.linalg.norm(e_ran_a.ravel()):.3f}", e_abs),
+        (e_ran_diff, f"Δe_ran (adv − clean)  ‖·‖={np.linalg.norm(e_ran_diff.ravel()):.3f}", diff_abs),
+    ]
+    for ax, (img, title, vabs) in zip(axes, panels):
+        im = ax.imshow(img, cmap="RdBu_r", vmin=-vabs, vmax=vabs)
+        ax.set_title(title, fontsize=9)
+        ax.axis("off")
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.suptitle(
+        f"Range-space error shift (example {idx}) — "
+        "should equal proj_range(FBP(δ)) for NSN",
+        fontsize=9,
+    )
+    plt.tight_layout()
+    plt.savefig(out_dir / f"range_diff_{idx:03d}.png", dpi=150)
+    plt.close(fig)
     print("finished save")
 
 
@@ -662,6 +706,12 @@ def summarize_metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
         "success_mse",
     ]
 
+    decomp_keys = [
+        "clean_e_ran_l2", "clean_e_nul_l2", "clean_e_ran_frac", "clean_e_nul_frac",
+        "adv_e_ran_l2", "adv_e_nul_l2", "adv_e_ran_frac", "adv_e_nul_frac",
+    ]
+
+    keys = keys + [k for k in decomp_keys if k in rows[0]]
     for key in keys:
         values = [float(row[key]) for row in rows]
         mean, half_width = confidence_interval_95(values)
@@ -891,6 +941,8 @@ def main() -> None:
                     delta=attack_result.delta,
                     success_rel_l2_factor=args.success_rel_l2_factor,
                     success_mse_factor=args.success_mse_factor,
+                    radon = radon,
+
                 )
                 rows.extend(batch_rows)
 
