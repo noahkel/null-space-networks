@@ -162,12 +162,10 @@ class MatrixRadonAdapter(_RadonBase):
         # csr shape: (n_angles * det_count, resolution**2)
         csr = csr.astype(np.float64)
 
-        if self.svd_threshold > 0:
-            self._build_pseudoinverse(csr)
-            if self.phi is not None:
-                ang_mask = ((self.angles >= self.phi[0]) & (self.angles < self.phi[1]))
-                row_mask = np.repeat(ang_mask, self.det_count)
-                self._build_pseudoinverse_la(csr[row_mask, :])
+        if self.svd_threshold > 0 and self.phi is not None:
+            ang_mask = ((self.angles >= self.phi[0]) & (self.angles < self.phi[1]))
+            row_mask = np.repeat(ang_mask, self.det_count)
+            self._build_pseudoinverse_la(csr[row_mask, :])
 
 
         A = self._scipy_csr_to_torch(csr)
@@ -197,9 +195,10 @@ class MatrixRadonAdapter(_RadonBase):
             )
         # thin SVD: U (m,k), s (k,), Vt (k,n) where k = min(m,n)
         U, s, Vt = scipy.linalg.svd(dense, full_matrices=False)
-        mask = s >= threshold
+        cutoff = threshold * s[0]
+        mask = s >= cutoff
         kept = int(mask.sum())
-        print(f"  SVD: {len(s)} singular values computed, {kept} >= {threshold:.2e} retained")
+        print(f"  SVD: {len(s)} singular values, largest={s[0]:.3e}, cutoff={cutoff:.3e} ({threshold:.2e} * s_max), {kept} retained")
         return U[:, mask], s[mask], Vt[mask, :]
 
     def _build_pseudoinverse(self, csr: scipy.sparse.csr_matrix) -> None:
