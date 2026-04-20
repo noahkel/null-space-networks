@@ -2,7 +2,7 @@
 #SBATCH --job-name=matrixAtteck
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
-#SBATCH --partition=a100
+#SBATCH --partition=a6000
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=noah.keltsch@uibk.ac.at
 
