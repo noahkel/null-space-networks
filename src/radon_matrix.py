@@ -331,7 +331,7 @@ class MatrixRadonAdapter(_RadonBase):
 
     def backward(self, y: torch.Tensor) -> torch.Tensor:
         """
-        Apply adjoint backprojection A^T y, scaled by 1/dx.
+        Apply pseudoinverse  A^+ y
 
         Parameters
         ----------
@@ -341,17 +341,17 @@ class MatrixRadonAdapter(_RadonBase):
         -------
         torch.Tensor, shape (B, C, resolution, resolution)
         """
-        orig_device = y.device
-        orig_dtype = y.dtype
-        B, C, n_angles, nd = y.shape
+        # orig_device = y.device
+        # orig_dtype = y.dtype
+        # B, C, n_angles, nd = y.shape
 
-        # Flatten sinogram dims: (B*C, n_angles*det_count)
-        y_flat = (y / self.dx).reshape(B * C, n_angles * nd).to(dtype=self.dtype, device=self.device)
+        # # Flatten sinogram dims: (B*C, n_angles*det_count)
+        # y_flat = (y / self.dx).reshape(B * C, n_angles * nd).to(dtype=self.dtype, device=self.device)
 
-        # Sparse matmul: (res**2, n_angles*det_count) @ (n_angles*det_count, B*C) -> (res**2, B*C)
-        x_flat = torch.sparse.mm(self._AT, y_flat.t()).t()  # (B*C, res**2)
+        # # Sparse matmul: (res**2, n_angles*det_count) @ (n_angles*det_count, B*C) -> (res**2, B*C)
+        # x_flat = torch.sparse.mm(self._AT, y_flat.t()).t()  # (B*C, res**2)
 
-        return x_flat.reshape(B, C, self.resolution, self.resolution).to(device=orig_device, dtype=orig_dtype)
+        return self.pseudoinverse(y)
 
     def pseudoinverse(self, y: torch.Tensor) -> torch.Tensor:
         """
