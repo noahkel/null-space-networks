@@ -267,7 +267,7 @@ def decompose_error(
     multiplications instead of CG. Otherwise falls back to CG.
     Returns (e_ran, e_nul) as detached CPU tensors.
     """
-    if isinstance(radon, MatrixRadonAdapter) and hasattr(radon, '_la_pinv_V'):
+    if isinstance(radon, MatrixRadonAdapter) and hasattr(radon, '_la_AP'):
         e_ran = radon.pseudoinverse_la(radon.forward_la(e))
         e_ran = e_ran.detach().cpu()
         e_nul = (e.cpu() - e_ran)
