@@ -196,6 +196,7 @@ class MatrixRadonAdapter(_RadonBase):
 
         U_k, s_k, Vt_k = U[:, mask], s[mask], Vt[mask, :]
         AP = (Vt_k.T / s_k) @ U_k.T  # (n, m)
+        self._Vk = torch.from_numpy(Vt_k.T).to(device=self.device, dtype=self.dtype)  # (n, k)
         return torch.from_numpy(AP).to(device=self.device, dtype=self.dtype)
 
     # ------------------------------------------------------------------
@@ -223,7 +224,8 @@ class MatrixRadonAdapter(_RadonBase):
         scipy.sparse.save_npz(str(path / "A.npz"), csr)
         if hasattr(self, "_la_AP"):
             np.save(str(path / "la_AP.npy"), self._la_AP.cpu().numpy())
-
+        if hasattr(self, "_Vk"):
+            np.save(str(path / "Vk.npy"), self._Vk.cpu().numpy())
 
     def _load_cache(self, path: Path) -> None:
         csr = scipy.sparse.load_npz(str(path / "A.npz")).astype(np.float64)
@@ -231,6 +233,9 @@ class MatrixRadonAdapter(_RadonBase):
         la_ap_path = path / "la_AP.npy"
         if la_ap_path.exists():
             self._la_AP = torch.from_numpy(np.load(str(la_ap_path))).to(device=self.device, dtype=self.dtype)
+        vk_path = path / "Vk.npy"
+        if vk_path.exists():
+            self._Vk = torch.from_numpy(np.load(str(vk_path))).to(device=self.device, dtype=self.dtype)
 
     def _scipy_csr_to_torch(self, mat: scipy.sparse.csr_matrix) -> torch.Tensor:
         """Convert a scipy CSR matrix to a torch sparse_csr_tensor on self.device."""
@@ -311,10 +316,15 @@ class MatrixRadonAdapter(_RadonBase):
         return x_flat.reshape(B, C, self.resolution, self.resolution).to(device=orig_device, dtype=orig_dtype)
 
     def proj_null_image(self, v: torch.Tensor) -> torch.Tensor:
-        """Project image v onto null(A_la): v - A_la^+ A_la v """
-        if not hasattr(self, '_la_AP'):
+        """Project image v onto null(A_la): v - V_k V_k^T v"""
+        if not hasattr(self, '_Vk'):
             return super().proj_null_image(v)
-        return v - self.pseudoinverse_la(self.forward_la(v))
+        orig_device, orig_dtype = v.device, v.dtype
+        B, C, H, W = v.shape
+        v_flat = v.reshape(B * C, H * W).to(dtype=self.dtype, device=self.device)
+        c = v_flat @ self._Vk  # (B*C, k)
+        result = v_flat - c @ self._Vk.T  # (B*C, n)
+        return result.reshape(B, C, H, W).to(device=orig_device, dtype=orig_dtype)
 
     @torch.no_grad()
     def _estimate_operator_norm(self, iters: int = 20, tol: float = 1e-6, seed: int = 0) -> None:
