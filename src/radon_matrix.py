@@ -68,6 +68,10 @@ class MatrixRadonAdapter(_RadonBase):
         Floating-point dtype.
     cache_dir : str or Path or None
         Directory for caching matrices and SVD factors.
+    svd_max_rank : int or None
+        On CPU, cap the ARPACK SVD at this many singular values (automatically
+        triggered when the matrix is too large for dense LAPACK).  Ignored on
+        CUDA (full SVD via cuSOLVER is used instead).  Default: None (auto).
     """
 
     def __init__(
@@ -84,6 +88,7 @@ class MatrixRadonAdapter(_RadonBase):
         device: Optional[torch.device] = None,
         dtype: torch.dtype = torch.float64,
         cache_dir: Optional[Union[str, Path]] = None,
+        svd_max_rank: Optional[int] = None,
     ):
         if phi is None:
             raise ValueError("phi=(lo, hi) is required for MatrixRadonAdapter.")
@@ -93,6 +98,7 @@ class MatrixRadonAdapter(_RadonBase):
         self.angles = np.asarray(angles, dtype=np.float64)
         self.phi = phi
         self.svd_threshold = float(svd_threshold)
+        self.svd_max_rank = svd_max_rank
         self.dx = float(dx)
         self.dataset = (dataset or "").lower()
         self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -193,11 +199,16 @@ class MatrixRadonAdapter(_RadonBase):
 
         Returns U_k (m,k), s_k (k,), Vt_k (k,n) as torch tensors on self.device,
         retaining singular values >= svd_threshold * s_max.
-        On CUDA, densifies as float32 and calls torch.linalg.svd (cuSOLVER, 64-bit
-        indices) to avoid the LAPACK 32-bit work-array overflow for large matrices.
-        On CPU, uses scipy.sparse.linalg.svds (ARPACK) when
-        the matrix is too large for the dense LAPACK path, otherwise falls back to
-        scipy.linalg.svd.
+
+        Strategy (in order):
+          1. CUDA + MAGMA: densify as float32, call torch.linalg.svd under the MAGMA
+             backend (avoids cuSOLVER gesvdj which has a hard dimension limit).
+          2. ARPACK (CPU): scipy.sparse.linalg.svds on the sparse matrix directly —
+             no densification, no memory cliff.  Falls back to dense scipy.linalg.svd
+             only for small matrices (< 4 GB dense).
+        The ARPACK rank cap is svd_max_rank (default min(16384, min(m,n)-1)).  A
+        warning is emitted if all computed values exceed the threshold, suggesting
+        the cap should be raised.
         """
         m, n = csr.shape
 
@@ -208,53 +219,58 @@ class MatrixRadonAdapter(_RadonBase):
                 device=self.device, dtype=self.dtype
             )
 
+        # --- GPU path: try MAGMA (avoids gesvdj dimension limits) ----------
         if self.device.type == "cuda":
-            # cuSOLVER uses 64-bit integers — no work-array overflow.
-            # float32 halves GPU memory vs float64 (~17 GB for 65k×65k).
+            mem_gb = m * n * 4 / 1e9  # float32
+            print(f"  densifying {m}×{n} on GPU ({mem_gb:.1f} GB fp32), trying MAGMA ...")
             dense_f32 = torch.from_numpy(csr.toarray().astype(np.float32)).to(self.device)
-            mem_gb = dense_f32.numel() * 4 / 1e9
-            if mem_gb > 4.0:
-                print(f"  densifying {m}×{n} on GPU ({mem_gb:.1f} GB fp32) ...")
-            U_t, s_t, Vh_t = torch.linalg.svd(dense_f32, full_matrices=False)
+            svd_ok = False
+            try:
+                with torch.backends.cuda.preferred_linalg_library("magma"):
+                    U_t, s_t, Vh_t = torch.linalg.svd(dense_f32, full_matrices=False)
+                svd_ok = True
+            except Exception as exc:
+                print(f"  MAGMA SVD failed ({exc}); falling back to ARPACK on CPU ...")
             del dense_f32
             torch.cuda.empty_cache()
 
-            s_cpu = s_t.cpu().numpy().astype(np.float64)
-            cutoff = self.svd_threshold * s_cpu[0]
-            keep = np.where(s_cpu >= cutoff)[0]
-            print(f"  {m}×{n}: {len(keep)}/{len(s_cpu)} singular values retained "
-                  f"(s_max={s_cpu[0]:.3e}, cutoff={cutoff:.3e})")
-            keep_t = torch.from_numpy(keep).to(self.device)
-            return _t(U_t[:, keep_t]), _t(s_t[keep_t]), _t(Vh_t[keep_t, :])
+            if svd_ok:
+                s_cpu = s_t.cpu().numpy().astype(np.float64)
+                cutoff = self.svd_threshold * s_cpu[0]
+                keep = np.where(s_cpu >= cutoff)[0]
+                print(f"  {m}×{n}: {len(keep)}/{len(s_cpu)} singular values retained "
+                      f"(s_max={s_cpu[0]:.3e}, cutoff={cutoff:.3e})")
+                keep_t = torch.from_numpy(keep).to(self.device)
+                return _t(U_t[:, keep_t]), _t(s_t[keep_t]), _t(Vh_t[keep_t, :])
 
-            # CPU path ----------------------------------------------------------
+        # --- ARPACK / dense CPU path ----------------------------------------
         dense_nbytes = m * n * 8  # float64
-        use_arpack = (dense_nbytes > 4e9)
+        use_arpack = (self.svd_max_rank is not None) or (dense_nbytes > 4e9)
         if use_arpack:
-            # ARPACK truncated SVD — works on sparse matrices, no memory explosion.
-            # k must be < min(m, n); cap at svd_max_rank or a generous default.
             k = min(
-                4096,
+                self.svd_max_rank if self.svd_max_rank is not None else min(16384, min(m, n) - 1),
                 min(m, n) - 1,
             )
-            print(f"  {m}×{n}: running ARPACK SVD with k={k} ...")
+            print(f"  {m}×{n}: ARPACK SVD k={k} "
+                  f"(raise svd_max_rank={k} if all values retained) ...")
             U, s_cpu, Vt = scipy.sparse.linalg.svds(csr.astype(np.float64), k=k)
-            # svds returns singular values in ascending order
             idx = np.argsort(s_cpu)[::-1]
             U, s_cpu, Vt = U[:, idx], s_cpu[idx], Vt[idx, :]
         else:
             dense = csr.toarray().astype(np.float64)
-            mem_gb = dense.nbytes / 1e9
-            if mem_gb > 4.0:
-                warnings.warn(
-                    f"SVD of {m}×{n} dense matrix ({mem_gb:.1f} GB) may be slow.",
-                    UserWarning, stacklevel=3,
-                )
             U, s_cpu, Vt = scipy.linalg.svd(dense, full_matrices=False)
             del dense
-
+            
         cutoff = self.svd_threshold * s_cpu[0]
         keep = s_cpu >= cutoff
+        if keep.all() and (use_arpack) and (min(m, n) - 1 > len(s_cpu)):
+            warnings.warn(
+                f"All {len(s_cpu)} computed singular values exceed the threshold "
+                f"(s_min={s_cpu[-1]:.3e} ≥ cutoff={cutoff:.3e}). "
+                f"Increase svd_max_rank (currently {len(s_cpu)}) to capture more "
+                "of the spectrum.",
+                UserWarning, stacklevel=3,
+            )
         print(f"  {m}×{n}: {keep.sum()}/{len(s_cpu)} singular values retained "
               f"(s_max={s_cpu[0]:.3e}, cutoff={cutoff:.3e})")
         return _t(U[:, keep]), _t(s_cpu[keep]), _t(Vt[keep, :])
