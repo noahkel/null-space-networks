@@ -193,26 +193,71 @@ class MatrixRadonAdapter(_RadonBase):
 
         Returns U_k (m,k), s_k (k,), Vt_k (k,n) as torch tensors on self.device,
         retaining singular values >= svd_threshold * s_max.
+        On CUDA, densifies as float32 and calls torch.linalg.svd (cuSOLVER, 64-bit
+        indices) to avoid the LAPACK 32-bit work-array overflow for large matrices.
+        On CPU, uses scipy.sparse.linalg.svds (ARPACK) when
+        the matrix is too large for the dense LAPACK path, otherwise falls back to
+        scipy.linalg.svd.
         """
-        dense = csr.toarray().astype(np.float64)
-        m, n = dense.shape
-        mem_gb = dense.nbytes / 1e9
-        if mem_gb > 4.0:
-            warnings.warn(
-                f"SVD of {m}×{n} dense matrix ({mem_gb:.1f} GB) may be slow.",
-                UserWarning, stacklevel=3,
+        m, n = csr.shape
+
+        def _t(arr) -> torch.Tensor:
+            if isinstance(arr, torch.Tensor):
+                return arr.to(device=self.device, dtype=self.dtype)
+            return torch.from_numpy(np.asarray(arr, dtype=np.float64)).to(
+                device=self.device, dtype=self.dtype
             )
 
-        U, s, Vt = scipy.linalg.svd(dense, full_matrices=False)
-        cutoff = self.svd_threshold * s[0]
-        keep = s >= cutoff
-        print(f"  {m}×{n}: {keep.sum()}/{len(s)} singular values retained "
-              f"(s_max={s[0]:.3e}, cutoff={cutoff:.3e})")
+        if self.device.type == "cuda":
+            # cuSOLVER uses 64-bit integers — no work-array overflow.
+            # float32 halves GPU memory vs float64 (~17 GB for 65k×65k).
+            dense_f32 = torch.from_numpy(csr.toarray().astype(np.float32)).to(self.device)
+            mem_gb = dense_f32.numel() * 4 / 1e9
+            if mem_gb > 4.0:
+                print(f"  densifying {m}×{n} on GPU ({mem_gb:.1f} GB fp32) ...")
+            U_t, s_t, Vh_t = torch.linalg.svd(dense_f32, full_matrices=False)
+            del dense_f32
+            torch.cuda.empty_cache()
 
-        def _t(arr: np.ndarray) -> torch.Tensor:
-            return torch.from_numpy(arr).to(device=self.device, dtype=self.dtype)
+            s_cpu = s_t.cpu().numpy().astype(np.float64)
+            cutoff = self.svd_threshold * s_cpu[0]
+            keep = np.where(s_cpu >= cutoff)[0]
+            print(f"  {m}×{n}: {len(keep)}/{len(s_cpu)} singular values retained "
+                  f"(s_max={s_cpu[0]:.3e}, cutoff={cutoff:.3e})")
+            keep_t = torch.from_numpy(keep).to(self.device)
+            return _t(U_t[:, keep_t]), _t(s_t[keep_t]), _t(Vh_t[keep_t, :])
 
-        return _t(U[:, keep]), _t(s[keep]), _t(Vt[keep, :])
+            # CPU path ----------------------------------------------------------
+        dense_nbytes = m * n * 8  # float64
+        use_arpack = (dense_nbytes > 4e9)
+        if use_arpack:
+            # ARPACK truncated SVD — works on sparse matrices, no memory explosion.
+            # k must be < min(m, n); cap at svd_max_rank or a generous default.
+            k = min(
+                4096,
+                min(m, n) - 1,
+            )
+            print(f"  {m}×{n}: running ARPACK SVD with k={k} ...")
+            U, s_cpu, Vt = scipy.sparse.linalg.svds(csr.astype(np.float64), k=k)
+            # svds returns singular values in ascending order
+            idx = np.argsort(s_cpu)[::-1]
+            U, s_cpu, Vt = U[:, idx], s_cpu[idx], Vt[idx, :]
+        else:
+            dense = csr.toarray().astype(np.float64)
+            mem_gb = dense.nbytes / 1e9
+            if mem_gb > 4.0:
+                warnings.warn(
+                    f"SVD of {m}×{n} dense matrix ({mem_gb:.1f} GB) may be slow.",
+                    UserWarning, stacklevel=3,
+                )
+            U, s_cpu, Vt = scipy.linalg.svd(dense, full_matrices=False)
+            del dense
+
+        cutoff = self.svd_threshold * s_cpu[0]
+        keep = s_cpu >= cutoff
+        print(f"  {m}×{n}: {keep.sum()}/{len(s_cpu)} singular values retained "
+              f"(s_max={s_cpu[0]:.3e}, cutoff={cutoff:.3e})")
+        return _t(U[:, keep]), _t(s_cpu[keep]), _t(Vt[keep, :])
 
     # ------------------------------------------------------------------
     # Cache key / save / load
