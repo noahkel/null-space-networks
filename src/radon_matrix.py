@@ -194,10 +194,14 @@ class MatrixRadonAdapter(_RadonBase):
         Returns U_k (m,k), s_k (k,), Vt_k (k,n) as torch tensors on self.device,
         retaining singular values >= svd_threshold * s_max.
 
-        Strategy:
-           GPU: densify as float32, call torch.svd_lowrank
-           CPU: densify as float32, call scipy.linalg.svd (LAPACK)
-            """
+        GPU strategy: densify as float32, run torch.linalg.svd under the MAGMA
+        backend (full thin SVD in one pass — avoids cuSOLVER gesvdj which overflows
+        its int32 workspace counter for large sketch matrices).  Falls back to CPU
+        LAPACK / ARPACK if MAGMA is unavailable or the matrix is too large for VRAM.
+
+        CPU strategy: dense scipy.linalg.svd for matrices that fit in RAM,
+        otherwise scipy.sparse.linalg.svds (ARPACK) directly on the sparse matrix.
+        """
         m, n = csr.shape
 
         def _t(arr) -> torch.Tensor:
@@ -208,56 +212,77 @@ class MatrixRadonAdapter(_RadonBase):
             )
 
         # --- GPU path: ----------
+
+        def _cut_and_return(U_np, s_np, Vt_np, source: str):
+            s_np = np.asarray(s_np, dtype=np.float64)
+            cutoff = self.svd_threshold * s_np[0]
+            keep = s_np >= cutoff
+            print(f"  {m}×{n}: {keep.sum()}/{len(s_np)} singular values retained "
+                  f"(s_max={s_np[0]:.3e}, cutoff={cutoff:.3e})  [{source}]")
+            return _t(U_np[:, keep]), _t(s_np[keep]), _t(Vt_np[keep, :])
+
+        # ------------------------------------------------------------------
+        # GPU path: full thin SVD via MAGMA (single pass, no cuSOLVER limits)
+        # ------------------------------------------------------------------
+        
+        
         if self.device.type == "cuda":
             mem_gb = m * n * 4 / 1e9  # float32
             print(f"  densifying {m}×{n} on GPU ({mem_gb:.1f} GB fp32)")
             dense_f32 = torch.from_numpy(csr.toarray().astype(np.float32)).to(self.device)
             try:
-                # Adaptive low-rank SVD: double q until the smallest computed
-                # singular value drops below the threshold, then we know we
-                # have captured the full significant spectrum.
-                max_q = min(m, n)
-                q = min(256, max_q)
-                while True:
-                    U_t, s_t, V_t = torch.svd_lowrank(dense_f32, q=q, niter=4)
-                    if s_t[-1].item() < self.svd_threshold * s_t[0].item() or q >= max_q:
-                        break
-                    next_q = min(q * 2, max_q)
-                    print(f"  all {q} values above threshold, retrying with q={next_q} ...")
-                    q = next_q
-            finally:
+                torch.backends.cuda.preferred_linalg_library("magma")
+                U_t, s_t, Vh_t = torch.linalg.svd(dense_f32, full_matrices=False)
+                torch.backends.cuda.preferred_linalg_library("default")
+            except Exception as exc:
+                torch.backends.cuda.preferred_linalg_library("default")
                 del dense_f32
                 torch.cuda.empty_cache()
+                print(f"  MAGMA SVD failed ({exc}); falling back to CPU ...")
+        else:
+            del dense_f32
+            torch.cuda.empty_cache()
+            return _cut_and_return(
+                U_t.cpu().numpy(), s_t.cpu().numpy(), Vh_t.cpu().numpy(), "GPU MAGMA"
+            )
 
-            s_cpu = s_t.cpu().numpy().astype(np.float64)
-            cutoff = self.svd_threshold * s_cpu[0]
-            keep = np.where(s_cpu >= cutoff)[0]
-            if len(keep) == len(s_cpu) and q < max_q:
-                warnings.warn(
-                    f"All {len(s_cpu)} computed singular values exceed the threshold "
-                    f"(s_min={s_cpu[-1]:.3e} >= cutoff={cutoff:.3e}). "
-                    "Consider raising svd_threshold.",
-                    UserWarning, stacklevel=3,
-                )
-            print(f"  {m}×{n}: {len(keep)}/{len(s_cpu)} singular values retained "
-                  f"(s_max={s_cpu[0]:.3e}, cutoff={cutoff:.3e})")
-            keep_t = torch.from_numpy(keep).to(self.device)
-            # svd_lowrank returns V (n,q), not Vh — transpose to get Vt (k,n)
-            return _t(U_t[:, keep_t]), _t(s_t[keep_t]), _t(V_t[:, keep_t].mT)
+        # ------------------------------------------------------------------
+        # CPU path: dense LAPACK for small matrices, ARPACK for large ones
+        # ------------------------------------------------------------------
+        mem_gb_f64 = m * n * 8 / 1e9
+        if mem_gb_f64 <= 4.0:
+            print(f"  densifying {m}×{n} on CPU ({mem_gb_f64:.1f} GB fp64) ...")
+            dense = csr.toarray().astype(np.float64)
+            U, s_cpu, Vt = scipy.linalg.svd(dense, full_matrices=False)
+            del dense
+            return _cut_and_return(U, s_cpu, Vt, "CPU LAPACK")
 
-        # CPU: dense LAPACK
-        mem_gb = m * n * 8 / 1e9  # float64
-        print(f"  densifying {m}×{n} on CPU ({mem_gb:.1f} GB fp64) ...")
-        dense = csr.toarray().astype(np.float64)
-        U, s_cpu, Vt = scipy.linalg.svd(dense, full_matrices=False)
-        del dense
+        from scipy.sparse.linalg import svds as sp_svds
 
-        cutoff = self.svd_threshold * s_cpu[0]
-        keep = s_cpu >= cutoff
-        print(f"  {m}×{n}: {keep.sum()}/{len(s_cpu)} singular values retained "
-              f"(s_max={s_cpu[0]:.3e}, cutoff={cutoff:.3e})")
-        return _t(U[:, keep]), _t(s_cpu[keep]), _t(Vt[keep, :])
+        sparse_max_q = min(m, n) - 1
+        sparse_q = min(256, sparse_max_q)
+        while True:
+            k = min(sparse_q, sparse_max_q)
+            print(f"  sparse CPU SVD (ARPACK), k={k} ...")
+            # Try PROPACK first (faster for large k), fall back to ARPACK.
+            try:
+                U_cpu, s_arr, Vt_cpu = sp_svds(csr, k=k, which="LM", solver="propack")
+            except Exception:
+                U_cpu, s_arr, Vt_cpu = sp_svds(csr, k=k, which="LM")
 
+            # svds returns singular values in ascending order — reverse them.
+            idx = np.argsort(s_arr)[::-1]
+            s_arr = s_arr[idx]
+            U_cpu = U_cpu[:, idx]
+            Vt_cpu = Vt_cpu[idx, :]
+
+            if s_arr[-1] < self.svd_threshold * s_arr[0] or k >= sparse_max_q:
+                break
+            next_q = min(k * 2, sparse_max_q)
+            print(f"  all {k} values above threshold, retrying with k={next_q} ...")
+            sparse_q = next_q
+
+        return _cut_and_return(U_cpu, s_arr, Vt_cpu, "sparse CPU")
     # ------------------------------------------------------------------
     # Cache key / save / load
     # ------------------------------------------------------------------

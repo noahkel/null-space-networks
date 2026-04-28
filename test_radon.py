@@ -201,7 +201,7 @@ def parse_args():
     p.add_argument("--svd-thresh", type=float, default=1e-3, help="SVD relative threshold (default 1e-3)")
     p.add_argument("--cache-dir",  type=str,   default=None, help="Cache directory for matrix/SVD files")
     p.add_argument("--device",     type=str,   default=None, help="Device: cpu / cuda / cuda:0 ...")
-    p.add_argument("--full",       action="store_true",      help="Realistic params: 256x256, 60 angles")
+    p.add_argument("--full",       action="store_true",      help="Params: 128x128, 180 angles")
     return p.parse_args()
 
 
@@ -209,7 +209,7 @@ def main():
     args = parse_args()
 
     if args.full:
-        res, n_angles, n_la = 256, 180, 120
+        res, n_angles, n_la = 128, 180, 120
     else:
         res, n_angles, n_la = args.res, args.n_angles, args.n_la
     svd_thresh = args.svd_thresh
