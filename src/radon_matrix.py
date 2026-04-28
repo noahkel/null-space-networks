@@ -225,12 +225,11 @@ class MatrixRadonAdapter(_RadonBase):
             print(f"  densifying {m}×{n} on GPU ({mem_gb:.1f} GB fp32), trying MAGMA ...")
             dense_f32 = torch.from_numpy(csr.toarray().astype(np.float32)).to(self.device)
             svd_ok = False
-            try:
-                with torch.backends.cuda.preferred_linalg_library("magma"):
-                    U_t, s_t, Vh_t = torch.linalg.svd(dense_f32, full_matrices=False)
+            try: 
+                U_t, s_t, Vh_t = torch.svd_lowrank(dense_f32)
                 svd_ok = True
             except Exception as exc:
-                print(f"  MAGMA SVD failed ({exc}); falling back to ARPACK on CPU ...")
+                print(f"  SVD failed ({exc}); falling back to ARPACK on CPU ...")
             del dense_f32
             torch.cuda.empty_cache()
 
