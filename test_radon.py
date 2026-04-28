@@ -263,8 +263,9 @@ def main():
     test_forward_la_rows(matrix_r, x)
     test_svd_reconstruction(matrix_r, x)
     test_pseudoinverse_range_consistency(matrix_r, x)
-    test_null_space(matrix_r, x)
-    test_decomposition(matrix_r, x)
+    v = torch.randn_like(x)
+    test_null_space(matrix_r, v)
+    test_decomposition(matrix_r, v)
     test_operator_norm(astra_r, matrix_r)
 
     n_pass = sum(_results)

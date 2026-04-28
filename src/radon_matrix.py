@@ -229,22 +229,25 @@ class MatrixRadonAdapter(_RadonBase):
         if self.device.type == "cuda":
             mem_gb = m * n * 4 / 1e9  # float32
             print(f"  densifying {m}×{n} on GPU ({mem_gb:.1f} GB fp32)")
-            dense_f32 = torch.from_numpy(csr.toarray().astype(np.float32)).to(self.device)
+            dense_f32 = None
             try:
-                torch.backends.cuda.preferred_linalg_library("magma")
-                U_t, s_t, Vh_t = torch.linalg.svd(dense_f32, full_matrices=False)
+                dense_f32 = torch.from_numpy(csr.toarray().astype(np.float32)).to(self.device)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    torch.backends.cuda.preferred_linalg_library("magma")
+                    U_t, s_t, Vh_t = torch.linalg.svd(dense_f32, full_matrices=False)
                 torch.backends.cuda.preferred_linalg_library("default")
+                result = _cut_and_return(
+                    U_t.cpu().numpy(), s_t.cpu().numpy(), Vh_t.cpu().numpy(), "GPU MAGMA"
+                )
+                del dense_f32, U_t, s_t, Vh_t
+                torch.cuda.empty_cache()
+                return result
             except Exception as exc:
                 torch.backends.cuda.preferred_linalg_library("default")
                 del dense_f32
                 torch.cuda.empty_cache()
                 print(f"  MAGMA SVD failed ({exc}); falling back to CPU ...")
-        else:
-            del dense_f32
-            torch.cuda.empty_cache()
-            return _cut_and_return(
-                U_t.cpu().numpy(), s_t.cpu().numpy(), Vh_t.cpu().numpy(), "GPU MAGMA"
-            )
 
         # ------------------------------------------------------------------
         # CPU path: dense LAPACK for small matrices, ARPACK for large ones
