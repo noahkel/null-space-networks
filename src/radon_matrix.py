@@ -227,7 +227,7 @@ class MatrixRadonAdapter(_RadonBase):
         # ------------------------------------------------------------------
         
         
-        if self.device.type == "cuda":
+        if self.device == "cuda":
             mem_gb = m * n * 4 / 1e9  # float64
             print(f"  densifying {m}×{n} on GPU ({mem_gb:.1f} GB fp64)")
             dense_f64 = None

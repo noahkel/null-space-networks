@@ -113,10 +113,9 @@ def main():
 
     # radon
     dx = 1.0
-    angles = np.linspace(-90, 90, NUM_ANGLES, endpoint=False) * np.pi / 180
+    angles = np.linspace(0, 180, NUM_ANGLES, endpoint=False) * np.pi / 180
     phi = (MIN_ANGLE * np.pi / 180, MAX_ANGLE * np.pi / 180)
-    print(phi)
-    print(f"Angles: {angles}")
+
     if MATRIX_MODE == 0:
         radon = AstraRadonAdapter(
             resolution=IMG_SIZE,
