@@ -115,6 +115,8 @@ def main():
     dx = 1.0
     angles = np.linspace(-90, 90, NUM_ANGLES, endpoint=False) * np.pi / 180
     phi = (MIN_ANGLE * np.pi / 180, MAX_ANGLE * np.pi / 180)
+    print(phi)
+    print(f"Angles: {angles}")
     if MATRIX_MODE == 0:
         radon = AstraRadonAdapter(
             resolution=IMG_SIZE,
@@ -133,6 +135,7 @@ def main():
             phi=phi,
             device=DEVICE,
             cache_dir="radon_cache",
+            svd_threshold=1e-6
         )
     L = radon.norm_A2
     tau, sigma = 1/L, 1/L
@@ -154,7 +157,7 @@ def main():
 
         y_diff_norms.append(float(torch.linalg.norm((y - y_delta).reshape(-1))))
 
-        x_fbp = radon.fbp_la(y_delta).squeeze()
+        x_fbp = radon.backward_la(y_delta).squeeze()
 
         np.save(OUT_DIR / "gt" / f"{i:05d}.npy", x_gt.detach().cpu().numpy())
         np.save(OUT_DIR / "fbp" / f"{i:05d}.npy", x_fbp.detach().cpu().numpy())

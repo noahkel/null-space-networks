@@ -120,6 +120,7 @@ class MatrixRadonAdapter(_RadonBase):
         self._nsn_mask = torch.from_numpy(self._nsn_mask_np).to(device=self.device, dtype=self.dtype)
 
         cache_path = Path(cache_dir) / self._cache_key() if cache_dir is not None else None
+        print(f"Cache path: {cache_path}")
         if cache_path is not None and cache_path.exists():
             print(f"Loading matrix cache from {cache_path}")
             self._load_cache(cache_path)
@@ -366,51 +367,121 @@ class MatrixRadonAdapter(_RadonBase):
         """
         Limited-angle forward projection: y_la = A_la x.
 
+        Returns a full-shape sinogram (same shape as forward()) with non-LA
+        rows zeroed out, so that both adapters share the same sinogram convention.
+
         Parameters
         ----------
         x : (B, C, res, res)
 
         Returns
         -------
-        y_la : (B, C, n_la, det_count)
+        y_la : (B, C, n_angles, det_count)  — non-LA rows are zero
         """
         B, C, H, W = x.shape
         x_flat = x.reshape(B * C, H * W).to(dtype=self.dtype, device=self.device)
-        y_flat = torch.sparse.mm(self._A_la, x_flat.t()).t()
-        return (y_flat.reshape(B, C, self.n_la, self.det_count)
+        y_compact = torch.sparse.mm(self._A_la, x_flat.t()).t()   # (B*C, n_la*det)
+        y_compact = y_compact.reshape(B * C, self.n_la, self.det_count)
+
+        # Embed into full-shape tensor (n_angles rows), zeros for non-LA angles
+        la_mask = torch.from_numpy(
+            (self.angles >= self.phi[0]) & (self.angles < self.phi[1])
+        ).to(device=self.device)
+        y_full = torch.zeros(
+            B * C, len(self.angles), self.det_count,
+            device=self.device, dtype=self.dtype,
+        )
+        y_full[:, la_mask, :] = y_compact
+        return (y_full.reshape(B, C, len(self.angles), self.det_count)
                 .to(device=x.device, dtype=x.dtype) * self.dx)
+
     # ------------------------------------------------------------------
-    # Mask helpers — override base class for compact (n_la) sinograms
+    # Sinogram-space projections  —  SVD-based
     # ------------------------------------------------------------------
+
+    def _la_mask(self) -> np.ndarray:
+        """Boolean numpy mask of shape (n_angles,) selecting LA angles."""
+        return (self.angles >= self.phi[0]) & (self.angles < self.phi[1])
+
+    def _compact_to_full(self, y_compact: torch.Tensor, B: int, C: int) -> torch.Tensor:
+        """
+        Embed a compact LA sinogram (B*C, n_la, det_count) into a full-shape
+        tensor (B, C, n_angles, det_count) with non-LA rows zeroed.
+        """
+        la_mask = torch.from_numpy(self._la_mask()).to(device=self.device)
+        y_full = torch.zeros(
+            B * C, len(self.angles), self.det_count,
+            device=self.device, dtype=self.dtype,
+        )
+        y_full[:, la_mask, :] = y_compact
+        return y_full.reshape(B, C, len(self.angles), self.det_count)
 
     def proj_ran(self, y: torch.Tensor) -> torch.Tensor:
-        """Compact LA sinogram is already in the range subspace; identity."""
-        return y
+        """
+        Project sinogram onto range(A_la) using the SVD left-singular vectors:
+            y_r = U_kl (U_kl^T y_la)
+        where y_la are the LA rows of y.  Result is full-shape with non-LA rows
+        set to zero.
+        """
+        self._require_svd("_U_k_la", "proj_ran")
+        la_mask = self._la_mask()
+        y_compact = y[..., la_mask, :]                      # (B,C,n_la,det_count)
+        orig_device, orig_dtype = y.device, y.dtype
+        B, C, n_la, nd = y_compact.shape
+        y_flat = y_compact.reshape(B * C, n_la * nd).to(dtype=self.dtype, device=self.device)
+        # U_k_la : (n_la*det, k)
+        coeffs   = y_flat @ self._U_k_la                   # (B*C, k)
+        y_proj   = (coeffs @ self._U_k_la.t()              # (B*C, n_la*det)
+                    ).reshape(B * C, n_la, nd)
+        return self._compact_to_full(y_proj, B, C).to(device=orig_device, dtype=orig_dtype)
 
     def proj_nsn(self, y: torch.Tensor) -> torch.Tensor:
-        """Compact LA sinogram has no null-space component; return zeros."""
-        return torch.zeros_like(y)
-
-    def fbp_la(self, y_la: torch.Tensor, filter_name: str = "ram-lak") -> torch.Tensor:
         """
-        Filtered backprojection from compact LA sinogram: x = A_la^T F y_la.
-
-        Uses the sparse adjoint A_la^T rather than the SVD pseudoinverse, so it
-        works even when svd_threshold=0 (no SVD built).
+        Project sinogram onto the null-sinogram space (complement of range(A_la)):
+            y_n = y - proj_ran(y)
         """
-        y_filtered = filter_sinogram(y_la, filter_name=filter_name)
-        orig_device, orig_dtype = y_filtered.device, y_filtered.dtype
-        B, C, n_la, nd = y_filtered.shape
-        y_flat = (y_filtered / self.dx).reshape(B * C, n_la * nd).to(
-            dtype=self.dtype, device=self.device
-        )
-        # A_la is (n_la*det, res^2); adjoint is A_la^T @ v
-        # Convert CSR → COO so .t() is supported, then sparse mm
-        A_la_T = self._A_la.to_sparse().t()  # (res^2, n_la*det)
-        x_flat = torch.sparse.mm(A_la_T, y_flat.t()).t()  # (B*C, res^2)
-        return x_flat.reshape(B, C, self.resolution, self.resolution).to(
-            device=orig_device, dtype=orig_dtype
-        )
+        return y - self.proj_ran(y)
+
+    # ------------------------------------------------------------------
+    # FBP — delegates to pseudoinverse (filter_name kept for API compat)
+    # ------------------------------------------------------------------
+
+    def fbp(self, y: torch.Tensor, filter_name: str = "ram-lak") -> torch.Tensor:
+        """
+        Full-angle reconstruction via pseudoinverse: x = A^+ y.
+
+        Delegates to backward().  The filter_name argument is unused
+        (kept for API compatibility with AstraRadonAdapter).
+
+        Parameters
+        ----------
+        y : (B, C, n_angles, det_count)
+
+        Returns
+        -------
+        x : (B, C, res, res)
+        """
+        return self.backward(y)
+
+    def fbp_la(self, y: torch.Tensor, filter_name: str = "ram-lak") -> torch.Tensor:
+        """
+        Limited-angle reconstruction via pseudoinverse: x = A_la^+ y.
+
+        Delegates to backward_la().  The filter_name argument is unused
+        (kept for API compatibility with AstraRadonAdapter).
+
+        Expects a full-shape sinogram (B, C, n_angles, det_count) with non-LA rows
+        zeroed out (as produced by forward_la / proj_ran).
+
+        Parameters
+        ----------
+        y : (B, C, n_angles, det_count)  — non-LA rows should be zero
+
+        Returns
+        -------
+        x : (B, C, res, res)
+        """
+        return self.backward_la(y)
 
     # ------------------------------------------------------------------
     # Pseudoinverse (backward) operators  —  A^+ and A_la^+
@@ -437,24 +508,30 @@ class MatrixRadonAdapter(_RadonBase):
         x_flat = self._apply_pseudoinverse(y_flat, self._U_k, self._s_k, self._Vt_k)
         return x_flat.reshape(B, C, self.resolution, self.resolution).to(device=orig_device, dtype=orig_dtype)
 
-    def backward_la(self, y_la: torch.Tensor) -> torch.Tensor:
+    def backward_la(self, y: torch.Tensor) -> torch.Tensor:
         """
         Apply the limited-angle pseudoinverse: x = A_la^+ y_la.
 
         Uses the truncated SVD: A_la^+ = Vt_kl.T diag(1/s_kl) U_kl.T
 
+        Expects a full-shape sinogram (B, C, n_angles, det_count) with non-LA rows
+        zeroed out (as produced by forward_la / proj_ran).  The LA rows are
+        extracted internally before applying the pseudoinverse.
+
         Parameters
         ----------
-        y_la : (B, C, n_la, det_count)
+        y : (B, C, n_angles, det_count)  — non-LA rows should be zero
 
         Returns
         -------
         x : (B, C, res, res)
         """
         self._require_svd("_U_k_la", "backward_la (limited-angle pseudoinverse)")
-        orig_device, orig_dtype = y_la.device, y_la.dtype
-        B, C, n_la, nd = y_la.shape
-        y_flat = (y_la / self.dx).reshape(B * C, n_la * nd).to(dtype=self.dtype, device=self.device)
+        la_mask = (self.angles >= self.phi[0]) & (self.angles < self.phi[1])
+        y_compact = y[..., la_mask, :]                       # (B,C,n_la,det_count)
+        orig_device, orig_dtype = y_compact.device, y_compact.dtype
+        B, C, n_la, nd = y_compact.shape
+        y_flat = (y_compact / self.dx).reshape(B * C, n_la * nd).to(dtype=self.dtype, device=self.device)
         x_flat = self._apply_pseudoinverse(y_flat, self._U_k_la, self._s_k_la, self._Vt_k_la)
         return x_flat.reshape(B, C, self.resolution, self.resolution).to(device=orig_device, dtype=orig_dtype)
 
@@ -578,3 +655,4 @@ class MatrixRadonAdapter(_RadonBase):
                 f"{method} requires SVD factors. "
                 "Pass svd_threshold > 0 at construction (and ensure phi is set for _la variants)."
             )
+
