@@ -72,7 +72,7 @@ def main():
     parser.add_argument("--n_samples", type=int, default=5000)
     parser.add_argument("--out_dir", type=str, default="./")
     args = parser.parse_args()
-    OUT_DIR = args.out_dir
+    OUT_DIR = Path(args.out_dir)
     N_SAMPLES = args.n_samples
     TV_SUBSET = 100
     print(args)

@@ -227,25 +227,26 @@ class MatrixRadonAdapter(_RadonBase):
         
         
         if self.device.type == "cuda":
-            mem_gb = m * n * 4 / 1e9  # float32
-            print(f"  densifying {m}×{n} on GPU ({mem_gb:.1f} GB fp32)")
-            dense_f32 = None
+            mem_gb = m * n * 4 / 1e9  # float64
+            print(f"  densifying {m}×{n} on GPU ({mem_gb:.1f} GB fp64)")
+            dense_f64 = None
             try:
-                dense_f32 = torch.from_numpy(csr.toarray().astype(np.float32)).to(self.device)
+                dense_f64 = torch.from_numpy(csr.toarray().astype(np.float64)).to(self.device)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", UserWarning)
                     torch.backends.cuda.preferred_linalg_library("magma")
-                    U_t, s_t, Vh_t = torch.linalg.svd(dense_f32, full_matrices=False)
+                    U_t, s_t, Vh_t = torch.linalg.svd(dense_f64, full_matrices=False)
                 torch.backends.cuda.preferred_linalg_library("default")
                 result = _cut_and_return(
                     U_t.cpu().numpy(), s_t.cpu().numpy(), Vh_t.cpu().numpy(), "GPU MAGMA"
                 )
-                del dense_f32, U_t, s_t, Vh_t
+                del dense_f64, U_t, s_t, Vh_t
                 torch.cuda.empty_cache()
                 return result
             except Exception as exc:
                 torch.backends.cuda.preferred_linalg_library("default")
-                del dense_f32
+                if dense_f64 is not None:
+                    del dense_f64
                 torch.cuda.empty_cache()
                 print(f"  MAGMA SVD failed ({exc}); falling back to CPU ...")
 
@@ -378,6 +379,38 @@ class MatrixRadonAdapter(_RadonBase):
         y_flat = torch.sparse.mm(self._A_la, x_flat.t()).t()
         return (y_flat.reshape(B, C, self.n_la, self.det_count)
                 .to(device=x.device, dtype=x.dtype) * self.dx)
+    # ------------------------------------------------------------------
+    # Mask helpers — override base class for compact (n_la) sinograms
+    # ------------------------------------------------------------------
+
+    def proj_ran(self, y: torch.Tensor) -> torch.Tensor:
+        """Compact LA sinogram is already in the range subspace; identity."""
+        return y
+
+    def proj_nsn(self, y: torch.Tensor) -> torch.Tensor:
+        """Compact LA sinogram has no null-space component; return zeros."""
+        return torch.zeros_like(y)
+
+    def fbp_la(self, y_la: torch.Tensor, filter_name: str = "ram-lak") -> torch.Tensor:
+        """
+        Filtered backprojection from compact LA sinogram: x = A_la^T F y_la.
+
+        Uses the sparse adjoint A_la^T rather than the SVD pseudoinverse, so it
+        works even when svd_threshold=0 (no SVD built).
+        """
+        y_filtered = filter_sinogram(y_la, filter_name=filter_name)
+        orig_device, orig_dtype = y_filtered.device, y_filtered.dtype
+        B, C, n_la, nd = y_filtered.shape
+        y_flat = (y_filtered / self.dx).reshape(B * C, n_la * nd).to(
+            dtype=self.dtype, device=self.device
+        )
+        # A_la is (n_la*det, res^2); adjoint is A_la^T @ v
+        # Convert CSR → COO so .t() is supported, then sparse mm
+        A_la_T = self._A_la.to_sparse().t()  # (res^2, n_la*det)
+        x_flat = torch.sparse.mm(A_la_T, y_flat.t()).t()  # (B*C, res^2)
+        return x_flat.reshape(B, C, self.resolution, self.resolution).to(
+            device=orig_device, dtype=orig_dtype
+        )
 
     # ------------------------------------------------------------------
     # Pseudoinverse (backward) operators  —  A^+ and A_la^+

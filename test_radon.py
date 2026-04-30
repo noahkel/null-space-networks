@@ -124,44 +124,48 @@ def test_svd_reconstruction(matrix_r, x):
     check("A_la ~= U_k_la S_k_la Vt_k_la", err_la < 1e-2, "%.2e" % err_la)
 
 
-def test_pseudoinverse_range_consistency(matrix_r, x):
+def test_pseudoinverse_range_consistency(matrix_r, x, svd_thresh):
     print("\n[5] Pseudoinverse range-consistency:  A A^+ A x ~= A x")
     if not hasattr(matrix_r, "_U_k"):
         print("   SKIP - SVD not built")
         return
 
+    tol = max(1e-6, svd_thresh)
+
     # Full
     y  = matrix_r.forward(x)
     y2 = matrix_r.forward(matrix_r.backward(y))
     err = rel(y2, y)
-    check("||A A^+ A x - A x|| / ||A x||  (full)", err < 1e-6, "%.2e" % err)
+    check("||A A^+ A x - A x|| / ||A x||  (full)", err < tol, "%.2e" % err)
 
     # Limited-angle
     y_la  = matrix_r.forward_la(x)
     y_la2 = matrix_r.forward_la(matrix_r.backward_la(y_la))
     err_la = rel(y_la2, y_la)
-    check("||A_la A_la^+ A_la x - A_la x|| / ||A_la x||  (la)", err_la < 1e-6, "%.2e" % err_la)
+    check("||A_la A_la^+ A_la x - A_la x|| / ||A_la x||  (la)", err_la < tol, "%.2e" % err_la)
 
 
-def test_null_space(matrix_r, v):
+def test_null_space(matrix_r, v, svd_thresh):
     print("\n[6,7] Null-space projections")
     if not hasattr(matrix_r, "_U_k"):
         print("   SKIP - SVD not built")
         return
+
+    tol = max(1e-6, svd_thresh)
 
     # null(A_la)
     v_null_la  = matrix_r.proj_null_la(v)
     Av_null_la = matrix_r.forward_la(v_null_la)
     Av_la      = matrix_r.forward_la(v)
     err_la = float(Av_null_la.norm()) / (float(Av_la.norm()) + 1e-12)
-    check("[6] ||A_la  proj_null_la(v)|| / ||A_la v|| ~= 0", err_la < 1e-6, "%.2e" % err_la)
+    check("[6] ||A_la  proj_null_la(v)|| / ||A_la v|| ~= 0", err_la < tol, "%.2e" % err_la)
 
     # null(A)
     v_null  = matrix_r.proj_null(v)
     Av_null = matrix_r.forward(v_null)
     Av      = matrix_r.forward(v)
     err = float(Av_null.norm()) / (float(Av.norm()) + 1e-12)
-    check("[7] ||A     proj_null(v)||    / ||A v||    ~= 0", err    < 1e-6, "%.2e" % err)
+    check("[7] ||A     proj_null(v)||    / ||A v||    ~= 0", err    < tol, "%.2e" % err)
 
 
 def test_decomposition(matrix_r, v):
@@ -198,7 +202,7 @@ def parse_args():
     p.add_argument("--res",        type=int,   default=64,   help="Image resolution (default 64)")
     p.add_argument("--n-angles",   type=int,   default=30,   help="Total projection angles (default 30)")
     p.add_argument("--n-la",       type=int,   default=15,   help="Limited-angle count (default 15)")
-    p.add_argument("--svd-thresh", type=float, default=1e-3, help="SVD relative threshold (default 1e-3)")
+    p.add_argument("--svd-thresh", type=float, default=1e-6, help="SVD relative threshold (default 1e-6)")
     p.add_argument("--cache-dir",  type=str,   default=None, help="Cache directory for matrix/SVD files")
     p.add_argument("--device",     type=str,   default=None, help="Device: cpu / cuda / cuda:0 ...")
     p.add_argument("--full",       action="store_true",      help="Params: 128x128, 180 angles")
@@ -262,9 +266,9 @@ def main():
     test_forward_consistency(astra_r, matrix_r, x)
     test_forward_la_rows(matrix_r, x)
     test_svd_reconstruction(matrix_r, x)
-    test_pseudoinverse_range_consistency(matrix_r, x)
+    test_pseudoinverse_range_consistency(matrix_r, x, svd_thresh)
     v = torch.randn_like(x)
-    test_null_space(matrix_r, v)
+    test_null_space(matrix_r, v, svd_thresh)
     test_decomposition(matrix_r, v)
     test_operator_norm(astra_r, matrix_r)
 
