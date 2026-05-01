@@ -95,10 +95,10 @@ def main():
 
     THETA = 1.0
 
-    DEVICE = "cuda" if torch.cuda.is_available() and MATRIX_MODE != 1 else "cpu"
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
     set_seed(0)
-    print("Generating on device" + str(DEVICE))
+    print("Generating on device " + str(DEVICE))
     # output structure
     ensure_dir(OUT_DIR)
     ensure_dir(OUT_DIR / "gt")
