@@ -109,7 +109,7 @@ def main():
 
     # dataset
     dataset = EllipsesDataset(image_size=IMG_SIZE)
-    gen = single_ellipse_generator(dataset, 'train')
+    gen = dataset.generator('train')   #single_ellipse_generator(dataset, 'train')
 
     # radon
     dx = 1.0
