@@ -6,7 +6,7 @@ from src.total_variation import tv_cp
 
 class RESNET(nn.Module):
     """
-    Simple residual wrapper around a UNet.
+    Residual wrapper: output = x + N(x).
 
     The network learns a residual correction which is added to the input.
     """
@@ -39,8 +39,12 @@ class NSN(nn.Module):
     """
     Null-Space Network (NSN).
 
+    Exact formula:   L(x) = x + P_ker(A_la)(N(x))
+    Approximation:   P_ker(A_la)(v) ≈ v - B_alpha * A_la * v = v - fbp_la(forward_la(v))
+
     Learns corrections that live in the null space of the Radon operator
     by projecting UNet outputs onto unmeasured angles and backprojecting.
+
     """
 
     def __init__(self, unet: nn.Module, radon: _RadonBase):
@@ -65,7 +69,7 @@ class NSN(nn.Module):
             Input image plus null-space correction.
         """
         res = self.unet(x)
-        x_nsn = self.radon.proj_null_image(res)
+        x_nsn = res - self.radon.fbp_la(self.radon.forward_la(res))
         return x + x_nsn
 
 
