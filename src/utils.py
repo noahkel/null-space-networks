@@ -262,39 +262,11 @@ def decompose_error(
       e_ran = A_la^+ A_la e   — projection onto range(A_la^T)
       e_nul = e - e_ran       — null-space component
 
-    When radon is a MatrixRadonAdapter with LA pseudoinverse factors built
-    (svd_threshold > 0 and phi set at construction), uses two sparse matrix
-    multiplications instead of CG. Otherwise falls back to CG.
-    Returns (e_ran, e_nul) as detached CPU tensors.
+    Delegates to radon.decompose_error: MatrixRadonAdapter uses exact SVD,
+    other adapters use CG.  Returns (e_ran, e_nul) as detached CPU tensors.
     """
-    if isinstance(radon, MatrixRadonAdapter) and hasattr(radon, '_U_k_la'):
-        e_ran = radon.pseudoinverse_la(radon.forward_la(e))
-        e_ran = e_ran.detach().cpu()
-        e_nul = (e.cpu() - e_ran)
-        return e_ran, e_nul
-    def AtA(x: torch.Tensor) -> torch.Tensor:
-        return radon.backward_la(radon.forward_la(x))
-
-    b = AtA(e)
-    x = torch.zeros_like(e)
-    r = b.clone()
-    p = r.clone()
-    rr = (r * r).sum()
-
-    for _ in range(iters):
-        if rr.item() < tol ** 2:
-            break
-        Ap     = AtA(p)
-        alpha  = rr / (p * Ap).sum().clamp_min(1e-12)
-        x      = x + alpha * p
-        r      = r - alpha * Ap
-        rr_new = (r * r).sum()
-        p      = r + (rr_new / rr.clamp_min(1e-12)) * p
-        rr     = rr_new
-
-    e_ran = x.detach().cpu()
-    e_nul = (e - x).detach().cpu()
-    return e_ran, e_nul
+    e_ran, e_nul = radon.decompose_error(e, iters=iters, tol=tol)
+    return e_ran.detach().cpu(), e_nul.detach().cpu()
 
 
 def build_models(

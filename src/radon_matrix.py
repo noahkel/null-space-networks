@@ -620,6 +620,25 @@ class MatrixRadonAdapter(_RadonBase):
         result = (v_flat - v_range).reshape(B, C, H, W)
         return result.to(device=orig_device, dtype=orig_dtype)
 
+    def decompose_error(self, e: torch.Tensor, iters: int = 50, tol: float = 1e-6):
+        """
+        Exact SVD-based error decomposition: e = e_ran + e_null where
+          e_ran  = Vt_kl.T (Vt_kl e)   (range component)
+          e_null = e - e_ran            (null-space component)
+
+        Returns
+        -------
+        (e_ran, e_null) : Tuple[torch.Tensor, torch.Tensor]
+        """
+        self._require_svd("_Vt_k_la", "decompose_error")
+        orig_device, orig_dtype = e.device, e.dtype
+        B, C, H, W = e.shape
+        e_flat = e.reshape(B * C, H * W).to(dtype=self.dtype, device=self.device)
+        coeffs = e_flat @ self._Vt_k_la.t()  # (B*C, k)
+        e_ran_flat = coeffs @ self._Vt_k_la  # (B*C, n)
+        e_ran = e_ran_flat.reshape(B, C, H, W).to(device=orig_device, dtype=orig_dtype)
+        return e_ran, e - e_ran
+
     # ------------------------------------------------------------------
     # Operator norm estimation  (sparse power iteration on A, not A^+)
     # ------------------------------------------------------------------

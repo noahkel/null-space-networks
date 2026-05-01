@@ -232,6 +232,23 @@ class _RadonBase:
             rr = rr_new
 
         return v - x
+
+    def decompose_error(self, e: torch.Tensor, iters: int = 50, tol: float = 1e-6):
+        """
+        Decompose error e = e_ran + e_null where:
+          e_ran  = A_la^+ A_la e   (range component, visible to measurements)
+          e_null = e - e_ran       (null-space component, invisible)
+
+        Uses CG to approximate A_la^+ A_la; subclasses with SVD factors
+        (e.g. MatrixRadonAdapter) override this with an exact decomposition.
+
+        Returns
+        -------
+        (e_ran, e_null) : Tuple[torch.Tensor, torch.Tensor]
+        """
+        e_null = self.proj_null_image(e, iters=iters, tol=tol)
+        return e - e_null, e_null
+
     # ------------------------------------------------------------------
     # Operator norm estimation
     # ------------------------------------------------------------------
