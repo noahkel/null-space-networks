@@ -98,7 +98,7 @@ def test_forward_la_rows(matrix_r, x):
     y_la = matrix_r.forward_la(x)
     ang_mask = (matrix_r.angles >= matrix_r.phi[0]) & (matrix_r.angles < matrix_r.phi[1])
     y_full_la = y_full[:, :, ang_mask, :]
-    err = rel(y_la, y_full_la)
+    err = rel(y_la[:, :, ang_mask, :], y_full_la)
     check("forward_la == forward[:, la_angles, :]", err < 1e-8, "%.2e" % err)
 
 

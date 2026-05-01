@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=matrixAtteck
+#SBATCH --job-name=data_r_n
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --partition=all
@@ -51,7 +51,7 @@ python -u visualise_radon.py --idx 42 --data-dir $DATA_DIR --no-show --cache-dir
 
 # ── Training (adapter chosen from summary.json matrix_mode) ──────────────────
 
-python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR --models resnet,nsn,dpnsn,dpnsn_res --init fbp
+python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR --models resnet,nsn --init fbp
 
 echo "Finished Training at: $(date)"
 

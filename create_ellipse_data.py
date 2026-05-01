@@ -156,7 +156,7 @@ def main():
 
         y_diff_norms.append(float(torch.linalg.norm((y - y_delta).reshape(-1))))
 
-        x_fbp = radon.backward_la(y_delta).squeeze()
+        x_fbp = radon.fbp_la(y_delta).squeeze()
 
         np.save(OUT_DIR / "gt" / f"{i:05d}.npy", x_gt.detach().cpu().numpy())
         np.save(OUT_DIR / "fbp" / f"{i:05d}.npy", x_fbp.detach().cpu().numpy())
