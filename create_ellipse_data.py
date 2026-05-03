@@ -56,8 +56,6 @@ def single_ellipse_generator(dataset, part='train'):
         rot = r.uniform(0., 2 * np.pi)
         ellipsoids = np.array([[v, a1, a2, x, y, rot]])
         image = ellipsoid_phantom(dataset.space, ellipsoids)
-        if np.max(image) >0:
-            image /= np.max(image)
         yield image
 
 def main():
@@ -109,7 +107,7 @@ def main():
 
     # dataset
     dataset = EllipsesDataset(image_size=IMG_SIZE)
-    gen = dataset.generator('train')   #single_ellipse_generator(dataset, 'train')
+    gen = single_ellipse_generator(dataset, 'train') #dataset.generator('train')   #single_ellipse_generator(dataset, 'train')
 
     # radon
     dx = 1.0
