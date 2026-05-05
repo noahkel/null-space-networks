@@ -1,4 +1,3 @@
-
 from pathlib import Path
 from typing import Tuple, List
 
@@ -132,7 +131,7 @@ def main():
             phi=phi,
             device=DEVICE,
             cache_dir="radon_cache",
-            svd_threshold=1e-6
+            svd_threshold=1e-3
         )
     L = radon.norm_A2
     tau, sigma = 1/L, 1/L

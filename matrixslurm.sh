@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=nomatrix
+#SBATCH --job-name=matrix
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --partition=all
@@ -7,8 +7,8 @@
 #SBATCH --mail-user=noah.keltsch@uibk.ac.at
 
 REPO_DIR=/scratch/noah/Null-Space-Networks
-DATA_DIR=/scratch/noah/data/ellipses_out
-MODEL_DIR=/scratch/noah/models
+DATA_DIR=/scratch/noah/data/ellipses_out_matrices
+MODEL_DIR=/scratch/noah/models_matrices
 
 cd $REPO_DIR
 mkdir -p logs
@@ -41,10 +41,10 @@ NUM_THETAS=180
 N_SAMPLES=5000
 TYPE="ellipses"
 
-python -u test_radon.py --full
+#python -u test_radon.py --full
 # ── Data Generation (MatrixRadonAdapter, matrix_mode=1) ──────────────────────
 
-python -u create_ellipse_data.py --img_size $IMG_SIZE --noise $NOISE --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 0 --out_dir $DATA_DIR
+python -u create_ellipse_data.py --img_size $IMG_SIZE --noise $NOISE --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR
 
 echo "Finished Data Generation at: $(date)"
 python -u visualise_radon.py --idx 42 --data-dir $DATA_DIR --no-show --cache-dir "/scratch/noah/Null-Space-Networks/radon_cache"

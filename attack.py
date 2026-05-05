@@ -502,13 +502,14 @@ def load_model_checkpoint(
     base = Path(model_dir) if model_dir else None
     candidates = [
         *(
-            [base / f"runs_{example}" / f"init_{init_method}" / "checkpoints" / f"{model_name}_best.pt"]
+            [base / f"init_{init_method}" / "checkpoints" / f"{model_name}_best.pt"]
             if base else []
         ),
         Path(f"runs_{example}") / f"init_{init_method}" / "checkpoints" / f"{model_name}_best.pt",
         Path("checkpoints") / f"{model_name}_best.pt",
         Path("models") / f"{model_name}_best.pt",
     ]
+    print(f"Model path and checkpoint path: {candidates} and  {model_dir}")
     ckpt_path = next((p for p in candidates if p.exists()), None)
     if ckpt_path is None:
         raise FileNotFoundError(f"No checkpoint found for model '{model_name}' and init '{init_method}'")
