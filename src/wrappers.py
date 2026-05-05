@@ -39,9 +39,6 @@ class NSN(nn.Module):
     """
     Null-Space Network (NSN).
 
-    Exact formula:   L(x) = x + P_ker(A_la)(N(x))
-    Approximation:   P_ker(A_la)(v) ≈ v - B_alpha * A_la * v = v - fbp_la(forward_la(v))
-
     Learns corrections that live in the null space of the Radon operator
     by projecting UNet outputs onto unmeasured angles and backprojecting.
 
