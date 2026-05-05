@@ -69,7 +69,7 @@ class NSN(nn.Module):
             Input image plus null-space correction.
         """
         res = self.unet(x)
-        x_nsn = res - self.radon.fbp_la(self.radon.forward_la(res))
+        x_nsn = self.radon.fbp(self.radon.proj_nsn(self.radon.forward(res)))
         return x + x_nsn
 
 
@@ -120,7 +120,7 @@ class DPNSN(nn.Module):
         x_dp = self.radon.fbp_la(
             self._proj_l2_ball(self.radon.proj_ran(y), self.beta)
         )
-        x_nsn = self.radon.proj_null_image(self.radon.fbp(self.radon.proj_nsn(y)))
+        x_nsn = self.radon.fbp(self.radon.proj_nsn(y))
 
         return x + (x_dp + x_nsn)
 
@@ -172,6 +172,6 @@ class DPNSN_RES(nn.Module):
         r_ball = self._proj_l2_ball(r, self.beta)
 
         x_dp = res - self.radon.fbp_la(r_ball)
-        x_nsn = self.radon.proj_null_image(self.radon.fbp(self.radon.proj_nsn(y)))
+        x_nsn = self.radon.fbp(self.radon.proj_nsn(y))
 
         return x + x_dp + x_nsn
