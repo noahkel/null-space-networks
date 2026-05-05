@@ -24,6 +24,11 @@ import sys
 import math
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
+
+from create_ellipse_data import single_ellipse_generator
+from dival.datasets import EllipsesDataset
+
 
 PASS = "\033[92mPASS\033[0m"
 FAIL = "\033[91mFAIL\033[0m"
@@ -43,6 +48,18 @@ def check(name, cond, detail=""):
 def rel(a, b):
     return float((a - b).norm() / (b.norm() + 1e-12))
 
+def _imshow(ax, data: np.ndarray, title: str, cmap: str = "gray",
+            vmin=None, vmax=None, aspect: str = "equal") -> None:
+    im = ax.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax,
+                   aspect=aspect, interpolation="nearest")
+    ax.set_title(title, fontsize=8)
+    if aspect == "equal":
+        ax.axis("off")
+    else:
+        ax.set_xlabel("Detector", fontsize=7)
+        ax.set_ylabel("Angle index", fontsize=7)
+        ax.tick_params(labelsize=6)
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
 # ---------------------------------------------------------------------------
 # Phantom
@@ -56,7 +73,14 @@ def make_phantom(res, device, dtype):
     img += 0.5 * ((xx.abs() < 0.3) & (yy.abs() < 0.2)).to(dtype)
     return img.unsqueeze(0).unsqueeze(0)
 
+def make_phantom_single(res):
+    dataset = EllipsesDataset(image_size=res)
+    gen = single_ellipse_generator(dataset, 'train')
+    return next(gen)
 
+def make_phantom_multiple(res):
+    dataset = EllipsesDataset(image_size=res)
+    return next(dataset.generator('train'))
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -208,6 +232,139 @@ def parse_args():
     p.add_argument("--full",       action="store_true",      help="Params: 128x128, 180 angles")
     return p.parse_args()
 
+def run_tests(x, astra_r, matrix_r, svd_thresh):
+    test_shapes(astra_r, matrix_r, x)
+    test_forward_consistency(astra_r, matrix_r, x)
+    test_forward_la_rows(matrix_r, x)
+    test_svd_reconstruction(matrix_r, x)
+    test_pseudoinverse_range_consistency(matrix_r, x, svd_thresh)
+    v = torch.randn_like(x)
+    test_null_space(matrix_r, v, svd_thresh)
+    test_decomposition(matrix_r, v)
+    test_operator_norm(astra_r, matrix_r)
+
+    n_pass = sum(_results)
+    n_fail = len(_results) - n_pass
+    print("\n" + "=" * 60)
+    if n_fail == 0:
+        print("Results: %d/%d passed - all OK" % (n_pass, len(_results)))
+    else:
+        print("Results: %d/%d passed - %d FAILED" % (n_pass, len(_results), n_fail))
+    print("=" * 60)
+    return n_fail
+
+def to_np(t: torch.Tensor) -> np.ndarray:
+    return t.detach().cpu().float().numpy()
+
+def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname):
+    sino_astra_x = astra_r.forward(x)
+    sino_matrix_x = matrix_r.forward(x)
+    fbp_astra_x = astra_r.backward(sino_astra_x)
+    fbp_matrix_x = matrix_r.backward(sino_matrix_x)
+    sino_astra_la_x = astra_r.proj_ran(sino_astra_x)
+    sino_matrix_la_x = matrix_r.proj_ran(sino_matrix_x)
+    fbp_astra_la_x = astra_r.backward_la(sino_astra_la_x)
+    fbp_matrix_la_x = matrix_r.backward_la(sino_matrix_la_x)
+    x_gt = to_np(x[0, 0])
+    sa_x = to_np(sino_astra_x[0, 0])
+    sm_x = to_np(sino_matrix_x[0, 0])
+    fa_x = to_np(fbp_astra_x[0, 0])
+    fm_x = to_np(fbp_matrix_x[0, 0])
+    sa_la_x = to_np(sino_astra_la_x[0, 0])
+    sm_la_x = to_np(sino_matrix_la_x[0, 0])
+    fa_la_x = to_np(fbp_astra_la_x[0, 0])
+    fm_la_x = to_np(fbp_matrix_la_x[0, 0])
+
+    e_af = fa_x - x_gt
+    e_ala = fa_la_x - x_gt
+    e_mf = fm_x - x_gt
+    e_mla = fm_la_x - x_gt
+
+    e_abs = max(np.abs(e_af).max(), np.abs(e_ala).max(),
+                np.abs(e_mf).max(), np.abs(e_mla).max())
+
+    r_min = min(e_af.min(), e_ala.min(), e_mf.min(), e_mla.min(), x_gt.min())
+    r_max = max(e_af.max(), e_ala.max(), e_mf.max(), e_mla.max(), x_gt.max())
+
+    # Shared colour limits for sinograms (use full sinogram range)
+    s_min = min(sa_x.min(), sm_x.min())
+    s_max = max(sa_x.max(), sm_x.max())
+
+    # -- Figure (3 rows × 5 cols) ------------------------------------------
+    #
+    #   Row 0  Sinograms : GT image | ASTRA full | ASTRA LA | Matrix full | Matrix LA
+    #   Row 1  FBP recon : stored sino (data ref) | ASTRA full | ASTRA LA | Matrix full | Matrix LA
+    #   Row 2  Error     : (label)  | ASTRA full | ASTRA LA | Matrix full | Matrix LA
+
+    sino_ratio = max(n_la / res, 0.4)   # height of LA rows relative to image panels
+
+    fig = plt.figure(figsize=(20, 4 + 4 * sino_ratio + 5))
+    gs  = fig.add_gridspec(
+        3, 5,
+        height_ratios=[sino_ratio, 1, 1],
+        hspace=0.5, wspace=0.35,
+    )
+    axes = [[fig.add_subplot(gs[r, c]) for c in range(5)] for r in range(3)]
+
+    # ── Row 0: Sinograms ──────────────────────────────────────────────────
+    _imshow(axes[0][0], x_gt,  "Ground Truth",   aspect="equal")
+    _imshow(axes[0][1], sa_x,   "ASTRA\nFull sinogram",
+            vmin=s_min, vmax=s_max, aspect="auto")
+    _imshow(axes[0][2], sa_la_x,
+            f"ASTRA\nLA sinogram ({n_la}/{n_angles} angles)",
+            vmin=s_min, vmax=s_max, aspect="auto")
+    _imshow(axes[0][3], sm_x,   "Matrix\nFull sinogram",
+            vmin=s_min, vmax=s_max, aspect="auto")
+    _imshow(axes[0][4], sm_la_x,
+            f"Matrix\nLA sinogram ({n_la}/{n_angles} angles)",
+            vmin=s_min, vmax=s_max, aspect="auto")
+
+    # ── Row 1: FBP Reconstructions ────────────────────────────────────────
+    # _imshow(axes[1][0], sino_np,
+    #         f"Stored LA sino\n(data, {sino_np.shape[0]} angles, noisy)",
+    #         aspect="auto")
+    _imshow(axes[1][1], fa_x,  "ASTRA\nFull FBP",  vmin=r_min, vmax=r_max)
+    _imshow(axes[1][2], fa_la_x,
+            f"ASTRA\nLA FBP ({n_la}/{n_angles} angles)", vmin=r_min, vmax=r_max)
+    _imshow(axes[1][3], fm_x,  "Matrix\nFull FBP", vmin=r_min, vmax=r_max)
+    _imshow(axes[1][4], fm_la_x,
+            f"Matrix\nLA FBP ({n_la}/{n_angles} angles)", vmin=r_min, vmax=r_max)
+
+    def rmse(e): return float(np.sqrt(np.mean(e ** 2)))
+
+
+    # ── Row 2: Error maps (recon – GT) ────────────────────────────────────
+    axes[2][0].axis("off")
+    axes[2][0].text(0.5, 0.5, "Error\n(recon − GT)", ha="center", va="center",
+                    fontsize=10, transform=axes[2][0].transAxes)
+
+    _imshow(axes[2][1], e_af,
+            f"ASTRA Full FBP\nRMSE={rmse(e_af):.3e}",
+            cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
+    _imshow(axes[2][2], e_ala,
+            f"ASTRA LA FBP\nRMSE={rmse(e_ala):.3e}",
+            cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
+    _imshow(axes[2][3], e_mf,
+            f"Matrix Full FBP\nRMSE={rmse(e_mf):.3e}",
+            cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
+    _imshow(axes[2][4], e_mla,
+            f"Matrix LA FBP\nRMSE={rmse(e_mla):.3e}",
+            cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
+
+    # ── Row labels ────────────────────────────────────────────────────────
+    for r, lbl in enumerate(["Sinograms", "FBP Reconstructions", "Errors (recon − GT)"]):
+        axes[r][0].set_ylabel(lbl, fontsize=9, fontweight="bold", labelpad=6)
+
+    fig.suptitle(
+        f"Radon comparison  ({fname})  |  "
+        f"{res}×{res}  |  {n_angles} angles total,  {n_la} LA  "
+        fontsize=10, y=1.01,
+    )
+
+    plt.savefig(fname, dpi=150, bbox_inches="tight")
+    print(f"\nSaved → {fname}")
+
+    plt.close(fig)
 
 def main():
     args = parse_args()
@@ -260,26 +417,22 @@ def main():
         print("  ERROR constructing MatrixRadonAdapter: %s" % e)
         sys.exit(1)
 
+    print("\nRunning single phantom test ...")
     x = make_phantom(res, device, dtype)
+    n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
+    visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname="radon_test.png")
 
-    test_shapes(astra_r, matrix_r, x)
-    test_forward_consistency(astra_r, matrix_r, x)
-    test_forward_la_rows(matrix_r, x)
-    test_svd_reconstruction(matrix_r, x)
-    test_pseudoinverse_range_consistency(matrix_r, x, svd_thresh)
-    v = torch.randn_like(x)
-    test_null_space(matrix_r, v, svd_thresh)
-    test_decomposition(matrix_r, v)
-    test_operator_norm(astra_r, matrix_r)
+    print("\nRunning single phantom test from create_ellipse_data ...")
+    x = make_phantom_single(res)
+    n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
+    visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname="radon_test_single.png")
 
-    n_pass = sum(_results)
-    n_fail = len(_results) - n_pass
-    print("\n" + "=" * 60)
-    if n_fail == 0:
-        print("Results: %d/%d passed - all OK" % (n_pass, len(_results)))
-    else:
-        print("Results: %d/%d passed - %d FAILED" % (n_pass, len(_results), n_fail))
-    print("=" * 60)
+    
+    print("\nRunning multiple phantom test from create_ellipse_data ...")
+    x = make_phantom_multiple(res)
+    n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
+    visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname="radon_test_multiple.png")
+
     sys.exit(0 if n_fail == 0 else 1)
 
 
