@@ -18,9 +18,9 @@ These factors are used for:
 Shapes
 ------
     forward(x)       x: (B,C,res,res)    →  y:    (B,C,n_angles,det_count)
-    forward_la(x)    x: (B,C,res,res)    →  y_la: (B,C,n_la,det_count)
+    forward_la(x)    x: (B,C,res,res)    →  y_la: (B,C,n_angles,det_count)
     backward(y)      y: (B,C,n_angles,det_count) →  (B,C,res,res)
-    backward_la(y_la) y_la: (B,C,n_la,det_count) →  (B,C,res,res)
+    backward_la(y_la) y_la: (B,C,n_angles,det_count) →  (B,C,res,res)
 """
 
 import hashlib
@@ -227,7 +227,7 @@ class MatrixRadonAdapter(_RadonBase):
         # ------------------------------------------------------------------
         
         
-        if self.device == "cuda":
+        if self.device.type == "cuda":
             mem_gb = m * n * 4 / 1e9  # float64
             print(f"  densifying {m}×{n} on GPU ({mem_gb:.1f} GB fp64)")
             dense_f64 = None
@@ -443,15 +443,34 @@ class MatrixRadonAdapter(_RadonBase):
         return y - self.proj_ran(y)
 
     # ------------------------------------------------------------------
-    # FBP — delegates to pseudoinverse (filter_name kept for API compat)
+    # FBP — filter + sparse adjoint A^T, matching AstraRadonAdapter behaviour
     # ------------------------------------------------------------------
+
+    def _backproject(self, y: torch.Tensor) -> torch.Tensor:
+        """Apply sparse adjoint A^T to a full-shape sinogram (not the pseudoinverse)."""
+        orig_device, orig_dtype = y.device, y.dtype
+        B, C, n_a, nd = y.shape
+        y_flat = (y / self.dx).reshape(B * C, n_a * nd).to(dtype=self.dtype, device=self.device)
+        x_flat = torch.sparse.mm(self._A.t(), y_flat.t()).t()
+        return x_flat.reshape(B, C, self.resolution, self.resolution).to(device=orig_device, dtype=orig_dtype)
+
+    def _backproject_la(self, y: torch.Tensor) -> torch.Tensor:
+        """Apply sparse adjoint A_la^T to a full-shape sinogram (extracts LA rows first)."""
+        orig_device, orig_dtype = y.device, y.dtype
+        la_mask = self._la_mask()
+        y_compact = y[..., la_mask, :]                        # (B,C,n_la,det_count)
+        B, C, n_la, nd = y_compact.shape
+        y_flat = (y_compact / self.dx).reshape(B * C, n_la * nd).to(dtype=self.dtype, device=self.device)
+        x_flat = torch.sparse.mm(self._A_la.t(), y_flat.t()).t()
+        return x_flat.reshape(B, C, self.resolution, self.resolution).to(device=orig_device, dtype=orig_dtype)
 
     def fbp(self, y: torch.Tensor, filter_name: str = "ram-lak") -> torch.Tensor:
         """
-        Full-angle reconstruction via pseudoinverse: x = A^+ y.
+        Full-angle filtered backprojection: x = A^T( filter(y) ).
 
-        Delegates to backward().  The filter_name argument is unused
-        (kept for API compatibility with AstraRadonAdapter).
+        Matches AstraRadonAdapter behaviour so that fbp(forward(v)) ≈ v and
+        the NSN null-space approximation works correctly.
+        Use backward() for the exact pseudoinverse A^+ instead.
 
         Parameters
         ----------
@@ -461,27 +480,25 @@ class MatrixRadonAdapter(_RadonBase):
         -------
         x : (B, C, res, res)
         """
-        return self.backward(y)
+        return self._backproject(filter_sinogram(y, self.angles, filter_name=filter_name))
 
     def fbp_la(self, y: torch.Tensor, filter_name: str = "ram-lak") -> torch.Tensor:
         """
-        Limited-angle reconstruction via pseudoinverse: x = A_la^+ y.
+        Limited-angle filtered backprojection: x = A_la^T( filter(proj_ran(y)) ).
 
-        Delegates to backward_la().  The filter_name argument is unused
-        (kept for API compatibility with AstraRadonAdapter).
-
-        Expects a full-shape sinogram (B, C, n_angles, det_count) with non-LA rows
-        zeroed out (as produced by forward_la / proj_ran).
+        Matches AstraRadonAdapter behaviour so that the NSN null-space approximation
+        is consistent across adapters.
+        Use backward_la() for the exact limited-angle pseudoinverse A_la^+ instead.
 
         Parameters
         ----------
-        y : (B, C, n_angles, det_count)  — non-LA rows should be zero
+        y : (B, C, n_angles, det_count)  — non-LA rows are ignored
 
         Returns
         -------
         x : (B, C, res, res)
         """
-        return self.backward_la(y)
+        return self._backproject_la(filter_sinogram(self.proj_ran(y), filter_name=filter_name))
 
     # ------------------------------------------------------------------
     # Pseudoinverse (backward) operators  —  A^+ and A_la^+

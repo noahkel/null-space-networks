@@ -178,6 +178,10 @@ class _RadonBase:
     # Limited-angle and FBP methods
     # ------------------------------------------------------------------
 
+    def proj_ran(self, y: torch.Tensor) -> torch.Tensor:
+        """Project onto the 'range' (selected) angle set: y * ran_mask."""
+        return y * self._ran_mask.to(device=y.device, dtype=y.dtype)
+
     def forward_la(self, x: torch.Tensor) -> torch.Tensor:
         """Limited-angle forward projection: y = P_phi (A x)."""
         return self.proj_ran(self.forward(x))
@@ -198,10 +202,7 @@ class _RadonBase:
         """Project onto the 'null' (complement) angle set: y * nsn_mask."""
         return y * self._nsn_mask.to(device=y.device, dtype=y.dtype)
 
-    def proj_ran(self, y: torch.Tensor) -> torch.Tensor:
-        """Project onto the 'range' (selected) angle set: y * ran_mask."""
-        return y * self._ran_mask.to(device=y.device, dtype=y.dtype)
-
+    
     def proj_null_image(self, v: torch.Tensor, iters: int = 50, tol: float = 1e-6) -> torch.Tensor:
         """
         Project image v onto null(A_la): returns v - A_la^+ A_la v.
@@ -396,11 +397,21 @@ class RadonAdapter(_RadonBase):
         """Apply adjoint / backprojection A^T y, scaled by 1/dx."""
         return self.base.backward(y / self.dx)
 
+    
 
 # ---------------------------------------------------------------------------
 # Differentiable ASTRA autograd wrappers
 # ---------------------------------------------------------------------------
 
+def _astra_batch(x: torch.Tensor, single_fn, out_shape: tuple) -> torch.Tensor:
+    x_np = x.detach().cpu().float().numpy()
+    out = np.empty(out_shape, dtype=np.float32)
+    B, C = x.shape[:2]
+    for b in range(B):
+        for c in range(C):
+            out[b, c] = single_fn(x_np[b, c])
+    return torch.from_numpy(out).to(device=x.device, dtype=x.dtype)
+    
 class _AstraFP(torch.autograd.Function):
     """
     Differentiable forward projection via ASTRA.
@@ -412,26 +423,15 @@ class _AstraFP(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor, adapter: "AstraRadonAdapter") -> torch.Tensor:
         ctx.adapter = adapter
-        B, C, _H, _W = x.shape
-        n_angles = len(adapter.angles)
-        x_np = x.detach().cpu().float().numpy()
-        out = np.empty((B, C, n_angles, adapter.det_count), dtype=np.float32)
-        for b in range(B):
-            for c in range(C):
-                out[b, c] = adapter._fp_single(x_np[b, c])
-        return torch.from_numpy(out).to(device=x.device, dtype=x.dtype)
+        B, C = x.shape[:2]
+        return _astra_batch(x, adapter._fp_single, (B, C, len(adapter.angles), adapter.det_count))
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
         adapter = ctx.adapter
-        B, C, _n_a, _nd = grad_output.shape
-        g_np = grad_output.detach().cpu().float().numpy()
-        out = np.empty((B, C, adapter.resolution, adapter.resolution), dtype=np.float32)
-        for b in range(B):
-            for c in range(C):
-                out[b, c] = adapter._bp_single(g_np[b, c])
-        # second return value is gradient w.r.t. `adapter` (not a tensor — None)
-        return torch.from_numpy(out).to(device=grad_output.device, dtype=grad_output.dtype), None
+        B, C = grad_output.shape[:2]
+        grad = _astra_batch(grad_output, adapter._bp_single, (B, C, adapter.resolution, adapter.resolution))
+        return grad, None
 
 
 class _AstraBP(torch.autograd.Function):
@@ -445,25 +445,15 @@ class _AstraBP(torch.autograd.Function):
     @staticmethod
     def forward(ctx, y: torch.Tensor, adapter: "AstraRadonAdapter") -> torch.Tensor:
         ctx.adapter = adapter
-        B, C, _n_a, _nd = y.shape
-        y_np = y.detach().cpu().float().numpy()
-        out = np.empty((B, C, adapter.resolution, adapter.resolution), dtype=np.float32)
-        for b in range(B):
-            for c in range(C):
-                out[b, c] = adapter._bp_single(y_np[b, c])
-        return torch.from_numpy(out).to(device=y.device, dtype=y.dtype)
+        B, C = y.shape[:2]
+        return _astra_batch(y, adapter._bp_single, (B, C, adapter.resolution, adapter.resolution))
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
         adapter = ctx.adapter
-        B, C, _H, _W = grad_output.shape
-        n_angles = len(adapter.angles)
-        g_np = grad_output.detach().cpu().float().numpy()
-        out = np.empty((B, C, n_angles, adapter.det_count), dtype=np.float32)
-        for b in range(B):
-            for c in range(C):
-                out[b, c] = adapter._fp_single(g_np[b, c])
-        return torch.from_numpy(out).to(device=grad_output.device, dtype=grad_output.dtype), None
+        B, C = grad_output.shape[:2]
+        grad = _astra_batch(grad_output, adapter._fp_single, (B, C, len(adapter.angles), adapter.det_count))
+        return grad, None
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +466,7 @@ class AstraRadonAdapter(_RadonBase):
 
     The ASTRA Toolbox must be installed separately::
 
-        conda install -c astra-toolbox astra-toolbox          # CPU
+        conda install -c astra-toolbox astra-toolbox             # CPU
         conda install -c astra-toolbox/label/cuda astra-toolbox  # GPU
 
     Parameters

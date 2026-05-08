@@ -98,7 +98,7 @@ def test_shapes(astra_r, matrix_r, x):
 
     check("astra  forward  shape (B,C,n_a,det)", tuple(y_a.shape) == (B, C, n_a, nd), str(tuple(y_a.shape)))
     check("matrix forward  shape (B,C,n_a,det)", tuple(y_m.shape) == (B, C, n_a, nd), str(tuple(y_m.shape)))
-    check("matrix forward_la shape (B,C,n_la,det)", tuple(y_la.shape) == (B, C, n_la, nd), str(tuple(y_la.shape)))
+    check("matrix forward_la shape (B,C,n_a,det)", tuple(y_la.shape) == (B, C, n_a, nd), str(tuple(y_la.shape)))
 
     x_back = matrix_r.backward(y_m)
     x_backla = matrix_r.backward_la(y_la)
@@ -416,6 +416,8 @@ def main():
     except Exception as e:
         print("  ERROR constructing MatrixRadonAdapter: %s" % e)
         sys.exit(1)
+    
+    n_fail = 0
 
     print("\nRunning single phantom test ...")
     x = make_phantom(res, device, dtype)
