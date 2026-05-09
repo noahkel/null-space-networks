@@ -248,7 +248,7 @@ class MatrixRadonAdapter(_RadonBase):
                     warnings.simplefilter("ignore", UserWarning)
                     torch.backends.cuda.preferred_linalg_library("magma")
                     U_t, s_t, Vh_t = torch.linalg.svd(dense_f64, full_matrices=False)
-                torch.backends.cuda.preferred_linalg_library("default")
+                    torch.backends.cuda.preferred_linalg_library("default")
                 result = _cut_and_return(
                     U_t.cpu().numpy(), s_t.cpu().numpy(), Vh_t.cpu().numpy(), "GPU MAGMA"
                 )
@@ -256,7 +256,9 @@ class MatrixRadonAdapter(_RadonBase):
                 torch.cuda.empty_cache()
                 return result
             except Exception as exc:
-                torch.backends.cuda.preferred_linalg_library("default")
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    torch.backends.cuda.preferred_linalg_library("default")
                 if dense_f64 is not None:
                     del dense_f64
                 torch.cuda.empty_cache()

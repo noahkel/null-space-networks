@@ -6,6 +6,7 @@
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=noah.keltsch@uibk.ac.at
 
+NTFY="c7021201_slurmjobs"
 REPO_DIR=/scratch/noah/Null-Space-Networks
 DATA_DIR=/scratch/noah/data/ellipses_out
 MODEL_DIR=/scratch/noah/models
@@ -14,6 +15,8 @@ cd $REPO_DIR
 mkdir -p logs
 export PYTHONPATH=/scratch/noah/InverseProblems:$PYTHONPATH
 
+curl -s -d "Job $SLURM_JOB_ID ($SLURM_JOB_NAME) started on $SLURMD_NODENAME" \
+     "https://ntfy.sh/$NTFY" &
 # ── Environment setup ────────────────────────────────────────────────────────
 module purge
 module load anaconda/anaconda3
@@ -42,3 +45,6 @@ N_SAMPLES=5000
 TYPE="ellipses"
 
 python -u test_radon.py --full
+
+curl -s -d "Job $SLURM_JOB_ID ($SLURM_JOB_NAME) finished on $SLURMD_NODENAME" \
+     "https://ntfy.sh/$NTFY"
