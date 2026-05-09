@@ -212,23 +212,34 @@ class MatrixRadonAdapter(_RadonBase):
                 device=self.device, dtype=self.dtype
             )
 
-        # --- GPU path: ----------
-
         def _cut_and_return(U_np, s_np, Vt_np, source: str):
             s_np = np.asarray(s_np, dtype=np.float64)
             cutoff = self.svd_threshold * s_np[0]
             keep = s_np >= cutoff
             print(f"  {m}×{n}: {keep.sum()}/{len(s_np)} singular values retained "
                   f"(s_max={s_np[0]:.3e}, cutoff={cutoff:.3e})  [{source}]")
-            return _t(U_np[:, keep]), _t(s_np[keep]), _t(Vt_np[keep, :])
+            U_k  = _t(U_np[:, keep])
+            s_k  = _t(s_np[keep])
+            Vt_k = _t(Vt_np[keep, :])
+            for name, t in (("U", U_k), ("s", s_k), ("Vt", Vt_k)):
+                if not torch.isfinite(t).all():
+                    raise RuntimeError(
+                        f"SVD factor {name} from [{source}] contains NaN/Inf. "
+                        "Try a larger svd_threshold or increase the dense-SVD memory limit."
+                    )
+            return U_k, s_k, Vt_k
+
+
+
+
 
         # ------------------------------------------------------------------
         # GPU path: full thin SVD via MAGMA (single pass, no cuSOLVER limits)
         # ------------------------------------------------------------------
-        
-        
+
+
         if self.device.type == "cuda":
-            mem_gb = m * n * 4 / 1e9  # float64
+            mem_gb = m * n * 8 / 1e9  # float64
             print(f"  densifying {m}×{n} on GPU ({mem_gb:.1f} GB fp64)")
             dense_f64 = None
             try:
@@ -252,10 +263,10 @@ class MatrixRadonAdapter(_RadonBase):
                 print(f"  MAGMA SVD failed ({exc}); falling back to CPU ...")
 
         # ------------------------------------------------------------------
-        # CPU path: dense LAPACK for small matrices, ARPACK for large ones
+        # CPU path: dense LAPACK for small matrices, ARPACK for large ones, LAPACK is prefered
         # ------------------------------------------------------------------
         mem_gb_f64 = m * n * 8 / 1e9
-        if mem_gb_f64 <= 4.0:
+        if mem_gb_f64 <= 8.0:
             print(f"  densifying {m}×{n} on CPU ({mem_gb_f64:.1f} GB fp64) ...")
             dense = csr.toarray().astype(np.float64)
             U, s_cpu, Vt = scipy.linalg.svd(dense, full_matrices=False)
@@ -268,6 +279,16 @@ class MatrixRadonAdapter(_RadonBase):
         sparse_q = min(256, sparse_max_q)
         while True:
             k = min(sparse_q, sparse_max_q)
+
+            if k > sparse_max_q // 2:
+                warnings.warn(
+                    f"ARPACK SVD requested k={k} which is >{sparse_max_q//2} "
+                    f"(>half of sparse_max_q={sparse_max_q}). Results may be "
+                    "numerically unstable. Consider increasing svd_threshold or "
+                    "raising the dense-SVD memory limit.",
+                    UserWarning, stacklevel=3,
+                )
+
             print(f"  sparse CPU SVD (ARPACK), k={k} ...")
             # Try PROPACK first (faster for large k), fall back to ARPACK.
             try:
@@ -523,7 +544,15 @@ class MatrixRadonAdapter(_RadonBase):
         B, C, n_a, nd = y.shape
         y_flat = (y / self.dx).reshape(B * C, n_a * nd).to(dtype=self.dtype, device=self.device)
         x_flat = self._apply_pseudoinverse(y_flat, self._U_k, self._s_k, self._Vt_k)
-        return x_flat.reshape(B, C, self.resolution, self.resolution).to(device=orig_device, dtype=orig_dtype)
+        result = x_flat.reshape(B, C, self.resolution, self.resolution).to(device=orig_device, dtype=orig_dtype)
+        if not torch.isfinite(result).all():
+            warnings.warn(
+                "backward() produced non-finite values. The SVD factors may be corrupted "
+                "(common when ARPACK is used with k close to matrix rank). "
+                "Try a larger svd_threshold.",
+                RuntimeWarning, stacklevel=2,
+            )
+        return result
 
     def backward_la(self, y: torch.Tensor) -> torch.Tensor:
         """
@@ -550,7 +579,14 @@ class MatrixRadonAdapter(_RadonBase):
         B, C, n_la, nd = y_compact.shape
         y_flat = (y_compact / self.dx).reshape(B * C, n_la * nd).to(dtype=self.dtype, device=self.device)
         x_flat = self._apply_pseudoinverse(y_flat, self._U_k_la, self._s_k_la, self._Vt_k_la)
-        return x_flat.reshape(B, C, self.resolution, self.resolution).to(device=orig_device, dtype=orig_dtype)
+        result = x_flat.reshape(B, C, self.resolution, self.resolution).to(device=orig_device, dtype=orig_dtype)
+        if not torch.isfinite(result).all():
+            warnings.warn(
+                "backward_la() produced non-finite values. The SVD factors may be corrupted. "
+                "Try a larger svd_threshold.",
+                RuntimeWarning, stacklevel=2,
+            )
+        return result
 
     @staticmethod
     def _apply_pseudoinverse(

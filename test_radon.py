@@ -161,13 +161,19 @@ def test_pseudoinverse_range_consistency(matrix_r, x, svd_thresh):
 
     # Full
     y  = matrix_r.forward(x)
-    y2 = matrix_r.forward(matrix_r.backward(y))
+    x_back = matrix_r.backward(y)
+    finite_full = torch.isfinite(x_back).all().item()
+    check("backward() is finite (no NaN/Inf)", finite_full, "non-finite!" if not finite_full else "")
+    y2 = matrix_r.forward(x_back)
     err = rel(y2, y)
     check("||A A^+ A x - A x|| / ||A x||  (full)", err < tol, "%.2e" % err)
 
     # Limited-angle
     y_la  = matrix_r.forward_la(x)
-    y_la2 = matrix_r.forward_la(matrix_r.backward_la(y_la))
+    x_back_la = matrix_r.backward_la(y_la)
+    finite_la = torch.isfinite(x_back_la).all().item()
+    check("backward_la() is finite (no NaN/Inf)", finite_la, "non-finite!" if not finite_la else "")
+    y_la2 = matrix_r.forward_la(x_back_la)
     err_la = rel(y_la2, y_la)
     check("||A_la A_la^+ A_la x - A_la x|| / ||A_la x||  (la)", err_la < tol, "%.2e" % err_la)
 
@@ -262,12 +268,12 @@ def to_np(t: torch.Tensor) -> np.ndarray:
 def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname):
     sino_astra_x = astra_r.forward(x)
     sino_matrix_x = matrix_r.forward(x)
-    fbp_astra_x = astra_r.backward(sino_astra_x)
-    fbp_matrix_x = matrix_r.backward(sino_matrix_x)
+    fbp_astra_x = astra_r.fbp(sino_astra_x)
+    fbp_matrix_x = matrix_r.fbp(sino_matrix_x)
     sino_astra_la_x = astra_r.proj_ran(sino_astra_x)
     sino_matrix_la_x = matrix_r.proj_ran(sino_matrix_x)
-    fbp_astra_la_x = astra_r.backward_la(sino_astra_la_x)
-    fbp_matrix_la_x = matrix_r.backward_la(sino_matrix_la_x)
+    fbp_astra_la_x = astra_r.fbp_la(sino_astra_la_x)
+    fbp_matrix_la_x = matrix_r.fbp_la(sino_matrix_la_x)
     x_gt = to_np(x[0, 0])
     sa_x = to_np(sino_astra_x[0, 0])
     sm_x = to_np(sino_matrix_x[0, 0])
@@ -286,8 +292,8 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname):
     e_abs = max(np.abs(e_af).max(), np.abs(e_ala).max(),
                 np.abs(e_mf).max(), np.abs(e_mla).max())
 
-    r_min = min(e_af.min(), e_ala.min(), e_mf.min(), e_mla.min(), x_gt.min())
-    r_max = max(e_af.max(), e_ala.max(), e_mf.max(), e_mla.max(), x_gt.max())
+    r_min = min(fa_x.min(), fa_la_x.min(), fm_x.min(), fm_la_x.min(), x_gt.min())
+    r_max = max(fa_x.max(), fa_la_x.max(), fm_x.max(), fm_la_x.max(), x_gt.max())
 
     # Shared colour limits for sinograms (use full sinogram range)
     s_min = min(sa_x.min(), sm_x.min())
