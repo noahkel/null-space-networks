@@ -357,7 +357,7 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname):
 
     fig.suptitle(
         f"Radon comparison  ({fname})  |  "
-        f"{res}×{res}  |  {n_angles} angles total,  {n_la} LA  "
+        f"{res}×{res}  |  {n_angles} angles total,  {n_la} LA  ",
         fontsize=10, y=1.01,
     )
 

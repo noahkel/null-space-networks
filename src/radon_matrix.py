@@ -480,7 +480,7 @@ class MatrixRadonAdapter(_RadonBase):
         -------
         x : (B, C, res, res)
         """
-        return self._backproject(filter_sinogram(y, self.angles, filter_name=filter_name))
+        return self._backproject(filter_sinogram(y, filter_name=filter_name))
 
     def fbp_la(self, y: torch.Tensor, filter_name: str = "ram-lak") -> torch.Tensor:
         """
