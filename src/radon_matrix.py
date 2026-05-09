@@ -95,7 +95,7 @@ class MatrixRadonAdapter(_RadonBase):
         self.svd_threshold = float(svd_threshold)
         self.dx = float(dx)
         self.dataset = (dataset or "").lower()
-        self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device) if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = dtype
         self.norm_A: Optional[float] = None
         self.norm_A2: Optional[float] = None

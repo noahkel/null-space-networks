@@ -73,14 +73,17 @@ def make_phantom(res, device, dtype):
     img += 0.5 * ((xx.abs() < 0.3) & (yy.abs() < 0.2)).to(dtype)
     return img.unsqueeze(0).unsqueeze(0)
 
+def _odl_to_4d(img) -> torch.Tensor:
+    return torch.from_numpy(np.asarray(img).astype(np.float32)).unsqueeze(0).unsqueeze(0)
+
 def make_phantom_single(res):
     dataset = EllipsesDataset(image_size=res)
     gen = single_ellipse_generator(dataset, 'train')
-    return next(gen)
+    return _odl_to_4d(next(gen))
 
 def make_phantom_multiple(res):
     dataset = EllipsesDataset(image_size=res)
-    return next(dataset.generator('train'))
+    return _odl_to_4d(next(dataset.generator('train')))
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
