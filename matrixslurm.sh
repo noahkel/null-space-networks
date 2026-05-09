@@ -6,6 +6,7 @@
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=noah.keltsch@uibk.ac.at
 
+NTFY="c7021201_slurmjobs"
 REPO_DIR=/scratch/noah/Null-Space-Networks
 DATA_DIR=/scratch/noah/data/ellipses_out_matrices
 MODEL_DIR=/scratch/noah/models_matrices
@@ -13,6 +14,9 @@ MODEL_DIR=/scratch/noah/models_matrices
 cd $REPO_DIR
 mkdir -p logs
 export PYTHONPATH=/scratch/noah/Null-Space-Networks:$PYTHONPATH
+
+curl -s -d "Job $SLURM_JOB_ID ($SLURM_JOB_NAME) started on $SLURMD_NODENAME" \
+     "https://ntfy.sh/$NTFY" &
 
 # ── Environment setup ────────────────────────────────────────────────────────
 module purge
@@ -66,3 +70,6 @@ echo "Finished Adversarial Attack at: $(date)"
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 echo "Job finished at $(date)"
+
+curl -s -d "Job $SLURM_JOB_ID ($SLURM_JOB_NAME) finished at $(date)" \
+     "https://ntfy.sh/$NTFY_TOPIC"

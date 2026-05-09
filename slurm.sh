@@ -3,9 +3,10 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --partition=all
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=noah.keltsch@uibk.ac.at
 
+NTFY="c7021201_slurmjobs"
 REPO_DIR=/scratch/noah/Null-Space-Networks
 DATA_DIR=/scratch/noah/data/ellipses_out
 MODEL_DIR=/scratch/noah/models
@@ -13,6 +14,9 @@ MODEL_DIR=/scratch/noah/models
 cd $REPO_DIR
 mkdir -p logs
 export PYTHONPATH=/scratch/noah/Null-Space-Networks:$PYTHONPATH
+
+curl -s -d "Job $SLURM_JOB_ID ($SLURM_JOB_NAME) started on $SLURMD_NODENAME" \
+     "https://ntfy.sh/$NTFY" &
 
 # ── Environment setup ────────────────────────────────────────────────────────
 module purge
@@ -41,7 +45,7 @@ NUM_THETAS=180
 N_SAMPLES=5000
 TYPE="ellipses"
 
-python -u test_radon.py --full
+#python -u test_radon.py --full
 # ── Data Generation (MatrixRadonAdapter, matrix_mode=1) ──────────────────────
 
 python -u create_ellipse_data.py --img_size $IMG_SIZE --noise $NOISE --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 0 --out_dir $DATA_DIR
@@ -63,3 +67,6 @@ echo "Finished Adversarial Attack at: $(date)"
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo "Job finished at $(date)"
+
+curl -s -d "Job $SLURM_JOB_ID ($SLURM_JOB_NAME) finished at $(date)" \
+     "https://ntfy.sh/$NTFY"
