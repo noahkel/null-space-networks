@@ -529,6 +529,7 @@ def load_model_checkpoint(
 def to_numpy_img(x: torch.Tensor) -> np.ndarray:
     return x.detach().cpu().squeeze().numpy()
 
+_DEBUG_EVAL_COUNT = 0  # number of evaluate_batch calls so far
 
 def evaluate_batch(
     x_gt: torch.Tensor,
@@ -543,8 +544,39 @@ def evaluate_batch(
     success_mse_factor: float,
     radon=None,
 ) -> List[Dict[str, float]]:
+    global _DEBUG_EVAL_COUNT
     rows: List[Dict[str, float]] = []
     batch_size = x_gt.shape[0]
+    # ── Diagnostic: print shapes + value ranges on the first few calls so
+    #    we can track down blown-up metrics.
+    _DEBUG_EVAL_COUNT += 1
+    if _DEBUG_EVAL_COUNT <= 4:
+        def _dbg(name, t):
+            if isinstance(t, torch.Tensor):
+                arr = t.detach().cpu().float()
+                print(f"  DEBUG {name}: shape={tuple(t.shape)} dtype={t.dtype} "
+                      f"min={arr.min():.4e} max={arr.max():.4e} "
+                      f"norm={arr.norm():.4e} finite={torch.isfinite(arr).all().item()}")
+            else:
+                arr = np.asarray(t, dtype=np.float64)
+                print(f"  DEBUG {name}: shape={arr.shape} dtype={arr.dtype} "
+                      f"min={arr.min():.4e} max={arr.max():.4e} norm={np.linalg.norm(arr):.4e}")
+
+        print("DEBUG evaluate_batch — first call diagnostics")
+        _dbg("x_gt[0]", x_gt[0])
+        _dbg("clean_init[0]", clean_init[0])
+        _dbg("clean_pred[0]", clean_pred[0])
+        _dbg("adv_pred[0]", adv_pred[0])
+        _dbg("clean_y[0]", clean_y[0])
+        # numpy versions used for rel_l2
+        gt_np0 = to_numpy_img(x_gt[0])
+        clean_pred_np0 = to_numpy_img(clean_pred[0])
+        _dbg("gt_np0", gt_np0)
+        _dbg("clean_pred_np0", clean_pred_np0)
+        diff = clean_pred_np0 - gt_np0
+        print(f"  DEBUG rel_l2 numerator  ||pred-gt||={np.linalg.norm(diff):.4e}  "
+              f"denominator ||gt||={np.linalg.norm(gt_np0):.4e}  "
+              f"ratio={np.linalg.norm(diff) / (np.linalg.norm(gt_np0) + 1e-12):.4e}")
 
     clean_mse_batch = per_example_mse(clean_pred, x_gt)
     adv_mse_batch = per_example_mse(adv_pred, x_gt)
@@ -881,6 +913,9 @@ def main() -> None:
     init_method = args.init.lower()
     summary = load_summary(example, data_root=args.data_root)
     beta = float(summary["mean_norm_y_minus_y_delta"])
+    print(f"DEBUG CONFIG: example={example} init={init_method} "
+          f"data_root={args.data_root} model_dir={args.model_dir} "
+          f"beta={beta:.4e} device={device}")
     radon = build_radon(summary, device=device)
     eps = args.eps * beta
     loader = get_loader(
@@ -910,6 +945,32 @@ def main() -> None:
         json.dump(config, f, indent=2)
     scatter_rows: Dict[str, Dict[str, List[Dict]]] = defaultdict(dict)
 
+    # ── One-shot sanity check: run the first batch through the disk-stored
+    #    init (as training saw it) to verify the checkpoint is healthy.
+    print("DEBUG: quick sanity check with stored init from loader ...")
+    _init_reconstructor_sanity = InitReconstructor(
+        example=example, init_method=init_method, summary=summary, radon=radon
+    )
+    with torch.no_grad():
+        x_gt_s, x_init_s, y_delta_s = next(iter(loader))
+        x_gt_s = to_4d(x_gt_s).to(device)
+        x_init_s = to_4d(x_init_s).to(device)
+        y_delta_s = to_4d(y_delta_s).to(device)
+        print(f"  SANITY x_gt   shape={tuple(x_gt_s.shape)} dtype={x_gt_s.dtype} "
+              f"min={x_gt_s.min():.4e} max={x_gt_s.max():.4e}")
+        print(f"  SANITY x_init shape={tuple(x_init_s.shape)} dtype={x_init_s.dtype} "
+              f"min={x_init_s.min():.4e} max={x_init_s.max():.4e}")
+        print(f"  SANITY y_delta shape={tuple(y_delta_s.shape)} dtype={y_delta_s.dtype} "
+              f"min={y_delta_s.min():.4e} max={y_delta_s.max():.4e}")
+        # compute on-the-fly x_init via the SAME reconstructor the attack will use
+        y_proj = radon.proj_ran(y_delta_s)
+        x_init_fly = _init_reconstructor_sanity.exact(y_proj)
+        print(f"  SANITY x_init_fly ({init_method}) shape={tuple(x_init_fly.shape)} "
+              f"dtype={x_init_fly.dtype} min={x_init_fly.min():.4e} max={x_init_fly.max():.4e}")
+        x_init_err = (x_init_fly - x_init_s.to(x_init_fly.dtype)).norm() / (x_init_s.norm() + 1e-12)
+        print(f"  SANITY ||x_init_fly - x_init_stored|| / ||x_init_stored|| = {x_init_err:.6e}")
+    print()
+
     for model_name in model_names:
         print("loading " + model_name)
         model = load_model_checkpoint(
@@ -921,6 +982,20 @@ def main() -> None:
             device=device,
             model_dir=args.model_dir,
         )
+        # ── Per-model sanity: compare pred(stored_init) vs pred(on-the-fly_init)
+        #    and relative to GT, using the first stored batch.
+        with torch.no_grad():
+            pred_stored = model(x_init_s.to(device), y_delta_s.to(device))
+            pred_fly = model(x_init_fly.to(device), y_delta_s.to(device))
+            gt_norm = x_gt_s.norm()
+            stored_rel_l2 = (pred_stored - x_gt_s).norm() / (gt_norm + 1e-12)
+            fly_rel_l2 = (pred_fly - x_gt_s).norm() / (gt_norm + 1e-12)
+            print(f"  MODEL_SANITY {model_name}: pred(stored_init) rel_l2_to_gt={stored_rel_l2:.4e} "
+                  f"  pred(fly_init) rel_l2_to_gt={fly_rel_l2:.4e}")
+            ps_a = pred_stored.detach().cpu().float()
+            print(f"  MODEL_SANITY pred(stored) min={ps_a.min():.4e} max={ps_a.max():.4e} "
+                  f"norm={ps_a.norm():.4e} finite={torch.isfinite(ps_a).all().item()}")
+        print()
         adapter = ModelAttackAdapter(
             model=model,
             init_reconstructor=init_reconstructor,
@@ -931,10 +1006,30 @@ def main() -> None:
         with torch.no_grad():
             clean_rows_cache: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
             sample_count = 0
+            _cache_debug_printed = False
+
             for x_gt, _, y_delta in loader:
                 x_gt = to_4d(x_gt).to(device)
                 y_delta = to_4d(y_delta).to(device)
                 clean_pred, clean_init, y_clean = adapter.forward(y_delta, mode="exact")
+                # ── one-shot cache diagnostic ──────────────────────────────
+                if not _cache_debug_printed:
+                    _cache_debug_printed = True
+
+                    def _c(name, t):
+                        a = t.detach().cpu().float()
+                        print(f"  CACHE_DBG {name}: shape={tuple(t.shape)} "
+                              f"dtype={t.dtype} min={a.min():.4e} max={a.max():.4e} "
+                              f"norm={a.norm():.4e} finite={torch.isfinite(a).all().item()}")
+
+                    print(f"CACHE_DBG first batch  model={model_name}")
+                    _c("x_gt", x_gt)
+                    _c("y_delta", y_delta)
+                    _c("clean_init", clean_init)
+                    _c("y_clean", y_clean)
+                    _c("clean_pred", clean_pred)
+                # ───────────────────────────────────────────────────────────
+                
                 clean_rows_cache.append((x_gt, clean_init, y_clean, clean_pred))
                 sample_count += x_gt.shape[0]
                 if sample_count >= args.max_samples:
