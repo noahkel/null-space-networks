@@ -45,7 +45,7 @@ NUM_THETAS=180
 N_SAMPLES=5000
 TYPE="ellipses"
 
-python -u test_radon.py --full
+#python -u test_radon.py --full
 
 echo "finished test_radon.py at: $(date)"
 
@@ -72,4 +72,4 @@ echo "Finished Adversarial Attack at: $(date)"
 echo "Job finished at $(date)"
 
 curl -s -d "Job $SLURM_JOB_ID ($SLURM_JOB_NAME) finished at $(date)" \
-     "https://ntfy.sh/$NTFY_TOPIC"
+     "https://ntfy.sh/$NTFY"
