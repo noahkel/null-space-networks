@@ -63,7 +63,12 @@ def save_example_outputs(
 def rel_l2_np(x: np.ndarray, y: np.ndarray) -> float:
     num = np.linalg.norm(x - y)
     den = np.linalg.norm(y)
-    return float(num / (den + 1e-12))
+    # Clamp denominator to prevent blow-up on near-zero GT images.
+    # Sub-pixel ellipses from single_ellipse_generator produce all-zero discrete
+    # phantoms (ODL midpoint sampling); without this guard rel_l2 hits ~1e12.
+    # For 128×128: floor = 1e-3 * 128 ≈ 0.128, capping per-sample rel_l2 at ~30.
+    den = max(den, 1e-3 * float(np.sqrt(y.size)))
+    return float(num / den)
 
 def rel_l2(x: torch.Tensor, x_gt: torch.Tensor, eps: float = 1e-12) -> float:
     num = torch.linalg.norm((x - x_gt).reshape(-1))
