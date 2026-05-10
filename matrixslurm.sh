@@ -38,14 +38,14 @@ echo "============================================"
 
 
 IMG_SIZE=128
-NOISE=0.0
+NOISE=0.01
 MIN_ANGLE=0
 MAX_ANGLE=120
 NUM_THETAS=180
 N_SAMPLES=5000
 TYPE="ellipses"
 
-python -u test_radon.py --full
+#python -u test_radon.py --full
 
 echo "finished test_radon.py at: $(date)"
 
