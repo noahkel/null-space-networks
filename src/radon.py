@@ -513,7 +513,7 @@ class AstraRadonAdapter(_RadonBase):
         estimate_norm: bool = True,
         norm_iters: int = 20,
         device: Optional[torch.device] = None,
-        dtype: torch.dtype = torch.float32,
+        dtype: torch.dtype = torch.float64,
         phi: Optional[Tuple[float, float]] = None,
     ):
         try:

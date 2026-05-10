@@ -478,7 +478,7 @@ def build_radon(summary: Dict, device: torch.device):
             dx=float(summary["dx"]),
             estimate_norm=False,
             device=device,
-            dtype=torch.float32,
+            dtype=torch.float64,
             phi=phi,
             svd_threshold=float(summary.get("svd_threshold", 4e-3)),
             cache_dir="radon_cache",
@@ -491,7 +491,7 @@ def build_radon(summary: Dict, device: torch.device):
         dx=float(summary["dx"]),
         estimate_norm=False,
         device=device,
-        dtype=torch.float32,
+        dtype=torch.float64,
         phi=phi,
     )
 
