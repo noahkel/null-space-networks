@@ -100,9 +100,10 @@ def main():
     ensure_dir(OUT_DIR)
     ensure_dir(OUT_DIR / "gt")
     ensure_dir(OUT_DIR / "fbp")
-    ensure_dir(OUT_DIR / "tv")
-    ensure_dir(OUT_DIR / "lw")
+    #ensure_dir(OUT_DIR / "tv")
+    #ensure_dir(OUT_DIR / "lw")
     ensure_dir(OUT_DIR / "sino")
+    ensure_dir(OUT_DIR / "pinv")
 
     # dataset
     dataset = EllipsesDataset(image_size=IMG_SIZE)
@@ -154,9 +155,11 @@ def main():
         y_diff_norms.append(float(torch.linalg.norm((y - y_delta).reshape(-1))))
 
         x_fbp = radon.fbp_la(y_delta).squeeze()
+        x_pinv = radon.backward_la(y_delta).squeeze()
 
         np.save(OUT_DIR / "gt" / f"{i:05d}.npy", x_gt.detach().cpu().numpy())
         np.save(OUT_DIR / "fbp" / f"{i:05d}.npy", x_fbp.detach().cpu().numpy())
+        np.save(OUT_DIR / "pinv" / f"{i:05d}.npy", x_pinv.detach().cpu().numpy())
         np.save(OUT_DIR / "sino" / f"{i:05d}.npy", y_delta.squeeze().detach().cpu().numpy())
 
         samples.append((x_gt, y_delta))

@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, Subset
 
-InitType = Literal["tv", "fbp", "lw"]
+InitType = Literal["tv", "fbp", "lw", "pinv"]
 
 class EllipsesGTInitDataset(Dataset):
     """
@@ -94,8 +94,8 @@ def get_ellipse_dataloader(
     seed: int = 0,
 ) -> DataLoader:
     init_recon = init_recon.lower()
-    if init_recon not in ("tv", "fbp", "lw"):
-        raise ValueError("init_recon must be one of: 'tv', 'fbp', 'lw'")
+    if init_recon not in ("tv", "fbp", "lw", "pinv"):
+        raise ValueError("init_recon must be one of: 'tv', 'fbp', 'lw', 'pinv'")
 
     # full dataset
     dataset = EllipsesGTInitDataset(

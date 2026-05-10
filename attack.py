@@ -127,7 +127,7 @@ class InitReconstructor:
         self.lw_omega = float(summary.get("lw_omega") or 1.0 / max(self.l_value, 1e-6))
 
     def _fbp_seed(self, y: torch.Tensor) -> torch.Tensor:
-        if self.init_method == "fbp" and self.example == "ellipses":
+        if self.init_method in ("fbp", "pinv") and self.example == "ellipses":
             return self.radon.fbp_la(y)
         return self.radon.fbp(y, filter_name="ram-lak")
 
@@ -137,6 +137,9 @@ class InitReconstructor:
     def exact(self, y: torch.Tensor) -> torch.Tensor:
         if self.init_method == "fbp":
             return self._fbp_seed(y)
+
+        if self.init_method == "pinv":
+            return self.radon.backward_la(y)
 
         x0 = self._fbp_seed(y)
 
@@ -834,7 +837,7 @@ def run_attack(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Adversarial attacks for Radon reconstruction models.")
     parser.add_argument("--type", required=True, choices=["ellipses", "lodopab"])
-    parser.add_argument("--init", default="tv", help="Initialization method: tv,lw,fbp")
+    parser.add_argument("--init", default="fbp,pinv", help="Initialization method: tv,lw,fbp")
     parser.add_argument("--models", default="resnet,nsn,dpnsn,dpnsn_res")
     parser.add_argument("--attacks", default="pgd,fgsm,spsa")
     parser.add_argument("--norm", default="l2", choices=["l2", "linf"])
