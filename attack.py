@@ -125,6 +125,7 @@ class InitReconstructor:
         self.tv_iters = int(summary.get("tv_iters_final") or 0)
         self.lw_iters = int(summary.get("lw_iters") or 0)
         self.lw_omega = float(summary.get("lw_omega") or 1.0 / max(self.l_value, 1e-6))
+        self.noise_sigma_rel = float(summary.get("noise_sigma_rel") or 0.0)
 
     def _fbp_seed(self, y: torch.Tensor) -> torch.Tensor:
         if self.init_method in ("fbp", "pinv") and self.example == "ellipses":
@@ -139,7 +140,8 @@ class InitReconstructor:
             return self._fbp_seed(y)
 
         if self.init_method == "pinv":
-            return self.radon.backward_la(y)
+            sigma_sino = self.noise_sigma_rel * float(y.abs().max())
+            return self.radon.backward_la_tikhonov(y, lambda_reg=sigma_sino ** 2)
 
         x0 = self._fbp_seed(y)
 
@@ -478,7 +480,7 @@ def build_radon(summary: Dict, device: torch.device):
             device=device,
             dtype=torch.float32,
             phi=phi,
-            svd_threshold=1e-5,
+            svd_threshold=float(summary.get("svd_threshold", 4e-3)),
             cache_dir="radon_cache",
         )
     return AstraRadonAdapter(

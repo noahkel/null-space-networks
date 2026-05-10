@@ -92,6 +92,7 @@ def main(example, out_dir, data_dir, models, init_methods):
     ANGLES = summary["angles"]
     PHI = summary["phi"]
     MATRIX_MODE = int(summary["matrix_mode"])
+    SVD_THRESH = float(summary.get("svd_threshold", 1e-3))
     dx = summary["dx"]
 
     n_train = 4000
@@ -113,7 +114,7 @@ def main(example, out_dir, data_dir, models, init_methods):
             dx=dx,
             phi=phi,
             device=DEVICE,
-            svd_threshold=1e-5,
+            svd_threshold=SVD_THRESH,
             cache_dir="radon_cache",
         )
     else:

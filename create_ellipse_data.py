@@ -62,12 +62,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--img_size", type=int, default=128)
     parser.add_argument("--matrix_mode", type=int, default=1)
-    parser.add_argument("--noise", type=float, default=0.003)
+    parser.add_argument("--noise", type=float, default=0.01)
     parser.add_argument("--min_angle", type=float, default=-60)
     parser.add_argument("--max_angle", type=float, default=60)
     parser.add_argument("--num_thetas", type=int, default=180)
     parser.add_argument("--n_samples", type=int, default=5000)
     parser.add_argument("--out_dir", type=str, default="./")
+    parser.add_argument("--svd_thresh", type=float, default=4e-3)
     args = parser.parse_args()
     OUT_DIR = Path(args.out_dir)
     N_SAMPLES = args.n_samples
@@ -89,6 +90,7 @@ def main():
     
     LW_ITERS = 200
     LW_OMEGA_FACTOR = 1.0
+    SVD_THRESH = float(args.svd_thresh)
 
     THETA = 1.0
 
@@ -132,7 +134,7 @@ def main():
             phi=phi,
             device=DEVICE,
             cache_dir="radon_cache",
-            svd_threshold=1e-3
+            svd_threshold=SVD_THRESH
         )
     L = radon.norm_A2
     tau, sigma = 1/L, 1/L
@@ -155,7 +157,12 @@ def main():
         y_diff_norms.append(float(torch.linalg.norm((y - y_delta).reshape(-1))))
 
         x_fbp = radon.fbp_la(y_delta).squeeze()
-        x_pinv = radon.backward_la(y_delta).squeeze()
+        # Tikhonov-regularised pseudoinverse: λ = σ_noise² in sinogram space.
+        # This gives the Wiener-optimal solution for Gaussian noise, avoiding the
+        # massive noise amplification of the plain pseudoinverse while still
+        # producing a range-consistent (zero null-space component) initialisation.
+        sigma_sino = NOISE_sigma_REL * float(y.abs().max())
+        x_pinv = radon.backward_la_tikhonov(y_delta, lambda_reg=sigma_sino ** 2).squeeze()
 
         np.save(OUT_DIR / "gt" / f"{i:05d}.npy", x_gt.detach().cpu().numpy())
         np.save(OUT_DIR / "fbp" / f"{i:05d}.npy", x_fbp.detach().cpu().numpy())
@@ -250,6 +257,7 @@ def main():
         "lw_omega_factor": float(LW_OMEGA_FACTOR),
         "operator_norm_A2": float(L),
         "matrix_mode": int(MATRIX_MODE),
+        "svd_threshold": SVD_THRESH
     }
 
     with open(OUT_DIR / "summary.json", "w") as f:

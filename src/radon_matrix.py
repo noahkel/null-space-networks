@@ -590,6 +590,38 @@ class MatrixRadonAdapter(_RadonBase):
             )
         return result
 
+    def backward_la_tikhonov(self, y: torch.Tensor, lambda_reg: float) -> torch.Tensor:
+        """
+        Tikhonov-regularized limited-angle pseudoinverse: x = A_la^T (A_la A_la^T + λI)^{-1} y.
+
+        Via the SVD this simplifies to:
+            x = Vt_kl.T  diag(s_kl / (s_kl² + λ))  U_kl.T  y
+
+        For λ → 0 this reduces to the plain pseudoinverse; for λ > 0 it damps
+        contributions from small singular values, suppressing noise amplification.
+        The optimal choice for Gaussian noise with variance σ² is λ ≈ σ².
+
+        Parameters
+        ----------
+        y          : (B, C, n_angles, det_count) — non-LA rows should be zero
+        lambda_reg : regularisation strength (same units as s²; try σ_noise²)
+
+        Returns
+        -------
+        x : (B, C, res, res)
+        """
+        self._require_svd("_U_k_la", "backward_la_tikhonov")
+        la_mask = (self.angles >= self.phi[0]) & (self.angles < self.phi[1])
+        y_compact = y[..., la_mask, :]
+        orig_device, orig_dtype = y_compact.device, y_compact.dtype
+        B, C, n_la, nd = y_compact.shape
+        y_flat = (y_compact / self.dx).reshape(B * C, n_la * nd).to(dtype=self.dtype, device=self.device)
+        # Wiener-filter weights: s / (s² + λ)  instead of plain 1/s
+        w = self._s_k_la / (self._s_k_la ** 2 + lambda_reg)
+        z = (y_flat @ self._U_k_la) * w
+        x_flat = z @ self._Vt_k_la
+        return x_flat.reshape(B, C, self.resolution, self.resolution).to(device=orig_device, dtype=orig_dtype)
+    
     @staticmethod
     def _apply_pseudoinverse(
         y_flat: torch.Tensor,
