@@ -240,7 +240,7 @@ def parse_args():
     p.add_argument("--n-angles",   type=int,   default=30,   help="Total projection angles (default 30)")
     p.add_argument("--n-la",       type=int,   default=15,   help="Limited-angle count (default 15)")
     p.add_argument("--svd-thresh", type=float, default=4e-3, help="SVD relative threshold (default 4e-3)")
-    p.add_argument("--cache-dir",  type=str,   default=None, help="Cache directory for matrix/SVD files")
+    p.add_argument("--cache-dir",  type=str,   default="radon_cache", help="Cache directory for matrix/SVD files")
     p.add_argument("--device",     type=str,   default=None, help="Device: cpu / cuda / cuda:0 ...")
     p.add_argument("--full",       action="store_true",      help="Params: 128x128, 180 angles")
     return p.parse_args()
