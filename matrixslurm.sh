@@ -45,7 +45,7 @@ NUM_THETAS=180
 N_SAMPLES=5000
 TYPE="ellipses"
 
-#python -u test_radon.py --full
+python -u test_radon.py --full
 
 echo "finished test_radon.py at: $(date)"
 

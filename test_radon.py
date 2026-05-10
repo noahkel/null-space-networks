@@ -61,6 +61,10 @@ def _imshow(ax, data: np.ndarray, title: str, cmap: str = "gray",
         ax.tick_params(labelsize=6)
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
+def _rowlabel(ax, text: str) -> None:
+    ax.axis("off")
+    ax.text(0.5, 0.5, text, ha="center", va="center",
+            fontsize=9, transform=ax.transAxes)
 # ---------------------------------------------------------------------------
 # Phantom
 # ---------------------------------------------------------------------------
@@ -235,7 +239,7 @@ def parse_args():
     p.add_argument("--res",        type=int,   default=64,   help="Image resolution (default 64)")
     p.add_argument("--n-angles",   type=int,   default=30,   help="Total projection angles (default 30)")
     p.add_argument("--n-la",       type=int,   default=15,   help="Limited-angle count (default 15)")
-    p.add_argument("--svd-thresh", type=float, default=1e-6, help="SVD relative threshold (default 1e-6)")
+    p.add_argument("--svd-thresh", type=float, default=4e-3, help="SVD relative threshold (default 4e-3)")
     p.add_argument("--cache-dir",  type=str,   default=None, help="Cache directory for matrix/SVD files")
     p.add_argument("--device",     type=str,   default=None, help="Device: cpu / cuda / cuda:0 ...")
     p.add_argument("--full",       action="store_true",      help="Params: 128x128, 180 angles")
@@ -266,86 +270,112 @@ def to_np(t: torch.Tensor) -> np.ndarray:
     return t.detach().cpu().float().numpy()
 
 def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname):
+    # ── Forward passes ────────────────────────────────────────────────────
     sino_astra_x = astra_r.forward(x)
     sino_matrix_x = matrix_r.forward(x)
-    fbp_astra_x = astra_r.fbp(sino_astra_x)
-    fbp_matrix_x = matrix_r.fbp(sino_matrix_x)
     sino_astra_la_x = astra_r.proj_ran(sino_astra_x)
     sino_matrix_la_x = matrix_r.proj_ran(sino_matrix_x)
+
+    fbp_astra_x = astra_r.fbp(sino_astra_x)
     fbp_astra_la_x = astra_r.fbp_la(sino_astra_la_x)
     fbp_matrix_la_x = matrix_r.fbp_la(sino_matrix_la_x)
-    x_gt = to_np(x[0, 0])
-    sa_x = to_np(sino_astra_x[0, 0])
-    sm_x = to_np(sino_matrix_x[0, 0])
-    fa_x = to_np(fbp_astra_x[0, 0])
-    fm_x = to_np(fbp_matrix_x[0, 0])
+
+     # Pseudoinverse: A_la^+ y_la  (exact via truncated SVD, matrix adapter only)
+
+    pinv_matrix_la_x = matrix_r.backward_la(sino_matrix_la_x)
+
+    # ── Convert to numpy ──────────────────────────────────────────────────
+    x_gt    = to_np(x[0, 0])
+    sa_x    = to_np(sino_astra_x[0, 0])
+    sm_x    = to_np(sino_matrix_x[0, 0])
     sa_la_x = to_np(sino_astra_la_x[0, 0])
     sm_la_x = to_np(sino_matrix_la_x[0, 0])
+    fa_x    = to_np(fbp_astra_x[0, 0])
     fa_la_x = to_np(fbp_astra_la_x[0, 0])
     fm_la_x = to_np(fbp_matrix_la_x[0, 0])
 
-    e_af = fa_x - x_gt
-    e_ala = fa_la_x - x_gt
-    e_mf = fm_x - x_gt
-    e_mla = fm_la_x - x_gt
+    fp_la_x = to_np(pinv_matrix_la_x[0, 0])
 
-    e_abs = max(np.abs(e_af).max(), np.abs(e_ala).max(),
-                np.abs(e_mf).max(), np.abs(e_mla).max())
+    # ── Errors ────────────────────────────────────────────────────────────
+    e_af = fa_x - x_gt  # ASTRA full FBP
+    e_ala = fa_la_x - x_gt  # ASTRA LA  FBP
+    e_mla = fm_la_x - x_gt  # Matrix LA FBP
+    e_pinv = fp_la_x - x_gt  # Matrix LA Pinv
 
-    r_min = min(fa_x.min(), fa_la_x.min(), fm_x.min(), fm_la_x.min(), x_gt.min())
-    r_max = max(fa_x.max(), fa_la_x.max(), fm_x.max(), fm_la_x.max(), x_gt.max())
+    # ── Error decomposition for Matrix LA FBP and Pinv ────────────────────
+    # Range component: A_la^+ A_la e  (what the scanner can see in the error)
+    # Null component:  e - range       (what the scanner cannot see)
+    def decompose(e_np: np.ndarray):
+        e_t = torch.from_numpy(e_np).to(dtype=matrix_r.dtype,
+                                        device=matrix_r.device).unsqueeze(0).unsqueeze(0)
+        e_ran_t = matrix_r.backward_la(matrix_r.forward_la(e_t))
+        e_nul_t = matrix_r.proj_null_la(e_t)
+        return to_np(e_ran_t[0, 0]), to_np(e_nul_t[0, 0])
 
-    # Shared colour limits for sinograms (use full sinogram range)
+    e_mla_ran, e_mla_nul = decompose(e_mla)
+    e_pinv_ran, e_pinv_nul = decompose(e_pinv)
+
+    # ── Shared colour limits ───────────────────────────────────────────────
+    def rmse(e): return float(np.sqrt(np.mean(e ** 2)))
+
+    e_abs = max(np.abs(e_af).max(), np.abs(e_ala).max(), np.abs(e_mla).max(), np.abs(e_pinv).max())
+    # decomposition panels share a separate scale (range/null errors are smaller)
+    d_abs = max(np.abs(e_mla_ran).max(), np.abs(e_mla_nul).max(),
+                np.abs(e_pinv_ran).max(), np.abs(e_pinv_nul).max())
+
+    r_min = min(fa_x.min(), fa_la_x.min(), fm_la_x.min(), fp_la_x.min(), x_gt.min())
+    r_max = max(fa_x.max(), fa_la_x.max(), fm_la_x.max(), fp_la_x.max(), x_gt.max())
     s_min = min(sa_x.min(), sm_x.min())
     s_max = max(sa_x.max(), sm_x.max())
 
-    # -- Figure (3 rows × 5 cols) ------------------------------------------
+    # -- Figure layout (5 rows × 5 cols) -----------------------------------
     #
-    #   Row 0  Sinograms : GT image | ASTRA full | ASTRA LA | Matrix full | Matrix LA
-    #   Row 1  FBP recon : stored sino (data ref) | ASTRA full | ASTRA LA | Matrix full | Matrix LA
-    #   Row 2  Error     : (label)  | ASTRA full | ASTRA LA | Matrix full | Matrix LA
+    #  Cols: label/GT | ASTRA full (ref) | ASTRA LA FBP | Matrix LA FBP | Matrix LA Pinv
+    #
+    #  Row 0  Sinograms
+    #  Row 1  Reconstructions
+    #  Row 2  Error  (recon − GT)
+    #  Row 3  Range-space error  A_la^+ A_la e       ← what the scanner sees in the error
+    #  Row 4  Null-space  error  e − A_la^+ A_la e   ← what the scanner cannot see
 
-    sino_ratio = max(n_la / res, 0.4)   # height of LA rows relative to image panels
+    sino_ratio = max(n_la / res, 0.4)
 
-    fig = plt.figure(figsize=(20, 4 + 4 * sino_ratio + 5))
+    fig = plt.figure(figsize=(20, sino_ratio * 4 + 4 * 4 + 1))
     gs  = fig.add_gridspec(
-        3, 5,
-        height_ratios=[sino_ratio, 1, 1],
-        hspace=0.5, wspace=0.35,
+        5, 5,
+        height_ratios=[sino_ratio, 1, 1, 1, 1],
+        hspace=0.55, wspace=0.35,
     )
-    axes = [[fig.add_subplot(gs[r, c]) for c in range(5)] for r in range(3)]
+    axes = [[fig.add_subplot(gs[r, c]) for c in range(5)] for r in range(5)]
 
     # ── Row 0: Sinograms ──────────────────────────────────────────────────
-    _imshow(axes[0][0], x_gt,  "Ground Truth",   aspect="equal")
-    _imshow(axes[0][1], sa_x,   "ASTRA\nFull sinogram",
+    _imshow(axes[0][0], x_gt,
+            "Ground Truth",
+            aspect="equal")
+    _imshow(axes[0][1], sa_x,
+            "ASTRA\nFull sinogram",
             vmin=s_min, vmax=s_max, aspect="auto")
     _imshow(axes[0][2], sa_la_x,
-            f"ASTRA\nLA sinogram ({n_la}/{n_angles} angles)",
+            f"ASTRA\nLA sinogram ({n_la}/{n_angles})",
             vmin=s_min, vmax=s_max, aspect="auto")
-    _imshow(axes[0][3], sm_x,   "Matrix\nFull sinogram",
+    _imshow(axes[0][3], sm_la_x,
+            f"Matrix\nLA sinogram ({n_la}/{n_angles})",
             vmin=s_min, vmax=s_max, aspect="auto")
     _imshow(axes[0][4], sm_la_x,
             f"Matrix\nLA sinogram ({n_la}/{n_angles} angles)",
             vmin=s_min, vmax=s_max, aspect="auto")
+    axes[0][4].axis("off")
 
-    # ── Row 1: FBP Reconstructions ────────────────────────────────────────
-    # _imshow(axes[1][0], sino_np,
-    #         f"Stored LA sino\n(data, {sino_np.shape[0]} angles, noisy)",
-    #         aspect="auto")
-    _imshow(axes[1][1], fa_x,  "ASTRA\nFull FBP",  vmin=r_min, vmax=r_max)
-    _imshow(axes[1][2], fa_la_x,
-            f"ASTRA\nLA FBP ({n_la}/{n_angles} angles)", vmin=r_min, vmax=r_max)
-    _imshow(axes[1][3], fm_x,  "Matrix\nFull FBP", vmin=r_min, vmax=r_max)
-    _imshow(axes[1][4], fm_la_x,
-            f"Matrix\nLA FBP ({n_la}/{n_angles} angles)", vmin=r_min, vmax=r_max)
+    # ── Row 1: Reconstructions ────────────────────────────────────────────
+    axes[1][0].axis("off")
+    _imshow(axes[1][1], fa_x, "ASTRA Full FBP\n(reference)", vmin=r_min, vmax=r_max)
+    _imshow(axes[1][2], fa_la_x, f"ASTRA LA FBP\n({n_la}/{n_angles})", vmin=r_min, vmax=r_max)
+    _imshow(axes[1][3], fm_la_x, f"Matrix LA FBP\n({n_la}/{n_angles})", vmin=r_min, vmax=r_max)
+    _imshow(axes[1][4], fp_la_x, f"Matrix LA Pinv  $A_{{la}}^+y$\n({n_la}/{n_angles})",
+            vmin=r_min, vmax=r_max)
 
-    def rmse(e): return float(np.sqrt(np.mean(e ** 2)))
-
-
-    # ── Row 2: Error maps (recon – GT) ────────────────────────────────────
-    axes[2][0].axis("off")
-    axes[2][0].text(0.5, 0.5, "Error\n(recon − GT)", ha="center", va="center",
-                    fontsize=10, transform=axes[2][0].transAxes)
+    # ── Row 2: Total error (recon − GT) ───────────────────────────────────
+    _rowlabel(axes[2][0], "Total error\n(recon − GT)")
 
     _imshow(axes[2][1], e_af,
             f"ASTRA Full FBP\nRMSE={rmse(e_af):.3e}",
@@ -353,26 +383,56 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname):
     _imshow(axes[2][2], e_ala,
             f"ASTRA LA FBP\nRMSE={rmse(e_ala):.3e}",
             cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
-    _imshow(axes[2][3], e_mf,
-            f"Matrix Full FBP\nRMSE={rmse(e_mf):.3e}",
-            cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
-    _imshow(axes[2][4], e_mla,
+    _imshow(axes[2][3], e_mla,
             f"Matrix LA FBP\nRMSE={rmse(e_mla):.3e}",
             cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
+    _imshow(axes[2][4], e_pinv,
+            f"Matrix LA Pinv\nRMSE={rmse(e_pinv):.3e}",
+            cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
+
+    # ── Row 3: Range-space error component ───────────────────────────────
+    _rowlabel(axes[3][0],
+              "Range error\n$A_{la}^+ A_{la}\, e$\n(visible to scanner)")
+    axes[3][1].axis("off")  # no SVD for ASTRA
+    axes[3][2].axis("off")
+    _imshow(axes[3][3], e_mla_ran,
+            f"Matrix LA FBP\nRMSE={rmse(e_mla_ran):.3e}",
+            cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
+    _imshow(axes[3][4], e_pinv_ran,
+            f"Matrix LA Pinv\nRMSE={rmse(e_pinv_ran):.3e}  (≈ 0)",
+            cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
+
+    # ── Row 4: Null-space error component ────────────────────────────────
+    _rowlabel(axes[4][0],
+              "Null error\n$e - A_{la}^+ A_{la}\, e$\n(invisible to scanner)")
+    axes[4][1].axis("off")
+    axes[4][2].axis("off")
+    _imshow(axes[4][3], e_mla_nul,
+            f"Matrix LA FBP\nRMSE={rmse(e_mla_nul):.3e}",
+            cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
+    _imshow(axes[4][4], e_pinv_nul,
+            f"Matrix LA Pinv\nRMSE={rmse(e_pinv_nul):.3e}",
+            cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
 
     # ── Row labels ────────────────────────────────────────────────────────
-    for r, lbl in enumerate(["Sinograms", "FBP Reconstructions", "Errors (recon − GT)"]):
-        axes[r][0].set_ylabel(lbl, fontsize=9, fontweight="bold", labelpad=6)
+    row_titles = [
+        "Sinograms",
+        "Reconstructions",
+        "Total error (recon − GT)",
+        "Range-space error\n(scanner-visible)",
+        "Null-space error\n(scanner-invisible)",
+    ]
+    for r, lbl in enumerate(row_titles):
+        axes[r][0].set_ylabel(lbl, fontsize=8, fontweight="bold", labelpad=6)
 
     fig.suptitle(
         f"Radon comparison  ({fname})  |  "
-        f"{res}×{res}  |  {n_angles} angles total,  {n_la} LA  ",
+        f"{res}×{res}  |  {n_angles} angles total,  {n_la} LA",
         fontsize=10, y=1.01,
     )
 
     plt.savefig(fname, dpi=150, bbox_inches="tight")
     print(f"\nSaved → {fname}")
-
     plt.close(fig)
 
 def main():
