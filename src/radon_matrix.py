@@ -323,6 +323,7 @@ class MatrixRadonAdapter(_RadonBase):
         h.update(repr(self.phi).encode())
         h.update(repr(self.svd_threshold).encode())
         h.update(self.angles.tobytes())
+        h.update(str(self.dtype).encode())
         return h.hexdigest()[:16]
 
     def _save_cache(self, path: Path) -> None:
