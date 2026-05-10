@@ -443,6 +443,35 @@ def main():
     x = make_phantom_multiple(res)
     n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
     visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname="radon_test_multiple.png")
+    import matplotlib.pyplot as plt
+
+    s = matrix_r._s_k_la.cpu().numpy()          # singular values of A_la, sorted descending
+    s_max = s[0]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+
+    # Left: full spectrum
+    ax1.semilogy(s / s_max)
+    ax1.axhline(1e-3, color='r', linestyle='--', label='1e-3')
+    ax1.axhline(1e-2, color='orange', linestyle='--', label='1e-2')
+    ax1.axhline(0.5 / s_max, color='g', linestyle='--', label=f'σ_noise/s_max ≈ {0.5/s_max:.4f}')
+    ax1.set_xlabel("Singular value index")
+    ax1.set_ylabel("s_k / s_max")
+    ax1.set_title("A_la singular value spectrum")
+    ax1.legend()
+
+    # Right: how many dims in null space at each threshold
+    thresholds = np.logspace(-4, -1, 100)
+    null_dims = [(s < t * s_max).sum() for t in thresholds]
+    ax2.semilogx(thresholds, null_dims)
+    ax2.axhline(16384 / 3, color='k', linestyle='--', label='Expected (1/3 of pixels)')
+    ax2.axvline(1e-3, color='r', linestyle='--', label='1e-3')
+    ax2.set_xlabel("SVD threshold")
+    ax2.set_ylabel("Null space dimension")
+    ax2.set_title("Null space size vs threshold")
+    ax2.legend()
+
+    plt.tight_layout()
+    plt.savefig("svd_spectrum.png", dpi=150)
 
     sys.exit(0 if n_fail == 0 else 1)
 
