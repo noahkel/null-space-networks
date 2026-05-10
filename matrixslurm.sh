@@ -38,7 +38,7 @@ echo "============================================"
 
 
 IMG_SIZE=128
-NOISE=0.01
+NOISE=0.02
 MIN_ANGLE=0
 MAX_ANGLE=120
 NUM_THETAS=180
