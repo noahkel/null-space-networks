@@ -279,8 +279,9 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname):
     fbp_astra_x = astra_r.fbp(sino_astra_x)
     fbp_astra_la_x = astra_r.fbp_la(sino_astra_la_x)
     fbp_matrix_la_x = matrix_r.fbp_la(sino_matrix_la_x)
-    fm_x = to_np(matrix_r.fbp(sino_matrix_x))
-    fp_x = to_np(matrix_r.backward(sino_matrix_x))
+
+    fm_x = to_np(matrix_r.fbp(sino_matrix_x)[0,0])
+    fp_x = to_np(matrix_r.backward(sino_matrix_x)[0,0])
      # Pseudoinverse: A_la^+ y_la  (exact via truncated SVD, matrix adapter only)
 
     pinv_matrix_la_x = matrix_r.backward_la(sino_matrix_la_x)
