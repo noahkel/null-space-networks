@@ -242,7 +242,7 @@ def parse_args():
     p.add_argument("--n-la",       type=int,   default=120,   help="Limited-angle count (default 15)")
     p.add_argument("--svd-thresh", type=float, default=4e-3, help="SVD relative threshold (default 4e-3)")
     p.add_argument("--cache-dir",  type=str,   default="radon_cache", help="Cache directory for matrix/SVD files")
-    p.add_argument("--device",     type=str,   default=None, help="Device: cpu / cuda / cuda:0 ...")
+    p.add_argument("--device",     type=str,   default="cuda", help="Device: cpu / cuda / cuda:0 ...")
     p.add_argument("--full",       action="store_true",      help="Params: 128x128, 180 angles")
     p.add_argument("--model-dir",  type=str, default="/home/noah/noah/models_matrices",
                    help="Base directory containing init_*/checkpoints/ sub-folders "
@@ -293,7 +293,7 @@ def _find_and_load_model(model_dir, init_key, model_type, matrix_r):
 
 
 def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname,
-                      model_dir=None, model_type="nsn"):
+                      model_dir=None, model_type="nsn", device="cuda"):
     """
     Grid: one row per init method, columns show the reconstruction, its error
     against ground truth, and the error decomposed into range- and null-space
@@ -325,11 +325,12 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname,
     sino_a_full = astra_r.forward(x)
     sino_a_la   = astra_r.proj_ran(sino_a_full)
     sino_m_la   = matrix_r.proj_ran(matrix_r.forward(x))  # shared LA measurement
+    
 
     # ── Init methods: (display_name, init_key_for_checkpoint, recon_tensor) ──
     init_tensors = [
         ("FBP\n(Astra, LA)",  "fbp",  astra_r.fbp_la(sino_a_full)),
-        ("Tikh\n(Matrik, LA)",  "tikh", matrix_r.backward_tikhonov_la(sino_a_la)),
+        ("Tikh\n(Matrik, LA)",  "tikh", matrix_r.backward_la_tikhonov(sino_a_la, 4e-3)),
         ("FBP\n(Matrix, LA)",   "fbp",  matrix_r.fbp_la(sino_m_la)),
         ("Pinv\n(Matrix, LA)",  "pinv", matrix_r.backward_la(sino_m_la)),
     ]
@@ -367,7 +368,7 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname,
         if row_model is not None:
             row_model.eval()
             with torch.no_grad():
-                out = row_model(recon_t.float(), sino_m_la.float())
+                out = row_model(recon_t.float().to(device), sino_m_la.float().to(device))
             model_data = decomp(out.to(dtype=matrix_r.dtype))
 
         rows.append((name, init_data, model_data))
