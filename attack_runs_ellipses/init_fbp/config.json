@@ -11,7 +11,7 @@
   "no_random_start": false,
   "objective": "mse",
   "shift_weight": 0.25,
-  "attack_init_mode": "surrogate",
+  "attack_init_mode": "exact",
   "eval_init_mode": "exact",
   "split": "test",
   "batch_size": 4,
