@@ -328,8 +328,8 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname,
 
     # ── Init methods: (display_name, init_key_for_checkpoint, recon_tensor) ──
     init_tensors = [
-        ("FBP\n(Astra, full)",  "fbp",  astra_r.fbp(sino_a_full)),
-        ("FBP\n(Astra, LA)",    "fbp",  astra_r.fbp_la(sino_a_la)),
+        ("FBP\n(Astra, LA)",  "fbp",  astra_r.fbp_la(sino_a_full)),
+        ("Tikh\n(Matrik, LA)",  "tikh", matrix_r.backward_tikhonov_la(sino_a_la)),
         ("FBP\n(Matrix, LA)",   "fbp",  matrix_r.fbp_la(sino_m_la)),
         ("Pinv\n(Matrix, LA)",  "pinv", matrix_r.backward_la(sino_m_la)),
     ]
