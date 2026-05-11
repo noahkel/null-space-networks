@@ -852,7 +852,7 @@ def main() -> None:
     parser.add_argument("--no-random-start", action="store_true")
     parser.add_argument("--objective", default="mse", choices=["mse", "shift", "hybrid"])
     parser.add_argument("--shift-weight", type=float, default=0.25)
-    parser.add_argument("--attack-init-mode", default="surrogate", choices=["surrogate", "exact"])
+    parser.add_argument("--attack-init-mode", default="exact", choices=["surrogate", "exact"])
     parser.add_argument("--eval-init-mode", default="exact", choices=["surrogate", "exact"])
     parser.add_argument("--split", default="test", choices=["train", "test"])
     parser.add_argument("--batch-size", type=int, default=4)
