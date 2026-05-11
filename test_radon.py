@@ -22,6 +22,7 @@ Tests
 import argparse
 import sys
 import math
+from pathlib import Path
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -236,18 +237,20 @@ def test_operator_norm(astra_r, matrix_r):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Radon adapter verification tests")
-    p.add_argument("--res",        type=int,   default=64,   help="Image resolution (default 64)")
-    p.add_argument("--n-angles",   type=int,   default=30,   help="Total projection angles (default 30)")
-    p.add_argument("--n-la",       type=int,   default=15,   help="Limited-angle count (default 15)")
+    p.add_argument("--res",        type=int,   default=128,   help="Image resolution (default 64)")
+    p.add_argument("--n-angles",   type=int,   default=180,   help="Total projection angles (default 30)")
+    p.add_argument("--n-la",       type=int,   default=120,   help="Limited-angle count (default 15)")
     p.add_argument("--svd-thresh", type=float, default=4e-3, help="SVD relative threshold (default 4e-3)")
     p.add_argument("--cache-dir",  type=str,   default="radon_cache", help="Cache directory for matrix/SVD files")
     p.add_argument("--device",     type=str,   default=None, help="Device: cpu / cuda / cuda:0 ...")
     p.add_argument("--full",       action="store_true",      help="Params: 128x128, 180 angles")
-    p.add_argument("--nsn-checkpoint", type=str, default=None,
-                   help="Path to a model checkpoint (.pt) to visualise alongside each init")
+    p.add_argument("--model-dir",  type=str, default="/home/noah/noah/models_matrices",
+                   help="Base directory containing init_*/checkpoints/ sub-folders "
+                        "(e.g. /home/noah/noah/models_matrices).  Each init row "
+                        "looks for init_{key}/checkpoints/{model-type}_best.pt.")
     p.add_argument("--model-type", type=str,   default="nsn",
                    choices=["nsn", "resnet", "dpnsn", "dpnsn_res"],
-                   help="Model architecture to load from --nsn-checkpoint (default: nsn)")
+                   help="Model architecture to load (default: nsn)")
     return p.parse_args()
 
 def run_tests(x, astra_r, matrix_r, svd_thresh):
@@ -275,12 +278,33 @@ def to_np(t: torch.Tensor) -> np.ndarray:
     return t.detach().cpu().float().numpy()
 
 
-def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname, model=None):
+def _find_and_load_model(model_dir, init_key, model_type, matrix_r):
+    """
+    Look for  {model_dir}/init_{init_key}/checkpoints/{model_type}_best.pt
+    and load it.  Returns the model in eval mode, or None if not found.
+    """
+    if model_dir is None:
+        return None
+    ckpt = Path(model_dir) / f"init_{init_key}" / "checkpoints" / f"{model_type}_best.pt"
+    if not ckpt.exists():
+        print(f"  [model] no checkpoint: {ckpt}")
+        return None
+    return _load_model(str(ckpt), model_type, matrix_r, matrix_r.device)
+
+
+def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname,
+                      model_dir=None, model_type="nsn"):
     """
     Grid: one row per init method, columns show the reconstruction, its error
     against ground truth, and the error decomposed into range- and null-space
-    components.  If *model* is given, four additional columns show the same
-    breakdown for the model output.
+    components.
+
+    For each init method the corresponding trained model is looked up at
+        {model_dir}/init_{init_key}/checkpoints/{model_type}_best.pt
+    If the checkpoint exists, four additional columns are shown for that row;
+    if not, those columns are blank ("no checkpoint").  If *model_dir* is None
+    or no checkpoint is found for any row, the model columns are omitted
+    entirely.
 
     Layout
     ------
@@ -291,8 +315,8 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname, model=No
     Col 4  : range error  A_la^+ A_la e
     Col 5  : null error   e − A_la^+ A_la e
     Col 6  : model output          ┐
-    Col 7  : model total error     │ only when model is not None
-    Col 8  : model range error     │
+    Col 7  : model total error     │ present only when at least one
+    Col 8  : model range error     │ init has a checkpoint
     Col 9  : model null error      ┘
     """
     x_gt_np = to_np(x[0, 0])
@@ -302,13 +326,21 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname, model=No
     sino_a_la   = astra_r.proj_ran(sino_a_full)
     sino_m_la   = matrix_r.proj_ran(matrix_r.forward(x))  # shared LA measurement
 
-    # ── Init reconstructions ──────────────────────────────────────────────────
+    # ── Init methods: (display_name, init_key_for_checkpoint, recon_tensor) ──
     init_tensors = [
-        ("FBP\n(Astra, full)",  astra_r.fbp(sino_a_full)),
-        ("FBP\n(Astra, LA)",    astra_r.fbp_la(sino_a_la)),
-        ("FBP\n(Matrix, LA)",   matrix_r.fbp_la(sino_m_la)),
-        ("Pinv\n(Matrix, LA)",  matrix_r.backward_la(sino_m_la)),
+        ("FBP\n(Astra, full)",  "fbp",  astra_r.fbp(sino_a_full)),
+        ("FBP\n(Astra, LA)",    "fbp",  astra_r.fbp_la(sino_a_la)),
+        ("FBP\n(Matrix, LA)",   "fbp",  matrix_r.fbp_la(sino_m_la)),
+        ("Pinv\n(Matrix, LA)",  "pinv", matrix_r.backward_la(sino_m_la)),
     ]
+
+    # ── Load one model per unique init_key (cache to avoid re-loading) ────────
+    model_cache: dict = {}
+    for _, init_key, _ in init_tensors:
+        if init_key not in model_cache:
+            model_cache[init_key] = _find_and_load_model(
+                model_dir, init_key, model_type, matrix_r
+            )
 
     # ── Error decomposition helper ────────────────────────────────────────────
     def decomp(recon_t):
@@ -327,14 +359,15 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname, model=No
 
     # ── Per-row data ──────────────────────────────────────────────────────────
     rows = []
-    for name, recon_t in init_tensors:
+    for name, init_key, recon_t in init_tensors:
         init_data = decomp(recon_t)
 
+        row_model = model_cache[init_key]
         model_data = None
-        if model is not None:
-            model.eval()
+        if row_model is not None:
+            row_model.eval()
             with torch.no_grad():
-                out = model(recon_t.float(), sino_m_la.float())
+                out = row_model(recon_t.float(), sino_m_la.float())
             model_data = decomp(out.to(dtype=matrix_r.dtype))
 
         rows.append((name, init_data, model_data))
@@ -346,7 +379,8 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname, model=No
     all_errs   = [r[1][1] for r in rows]
     all_decomp = [r[1][2] for r in rows] + [r[1][3] for r in rows]
 
-    has_model = model is not None
+    # at least one row has model data → show model columns
+    has_model = any(r[2] is not None for r in rows)
     if has_model:
         all_imgs   += [r[2][0] for r in rows if r[2] is not None]
         all_errs   += [r[2][1] for r in rows if r[2] is not None]
@@ -368,7 +402,6 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname, model=No
         squeeze=False,
     )
 
-    # Column headers (only shown on the first row)
     INIT_HDRS = [
         "",
         "Ground Truth",
@@ -378,7 +411,7 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname, model=No
         "Null error\n$e - A_{la}^+A_{la}\\,e$\n(scanner-invisible)",
     ]
     MODEL_HDRS = [
-        "Model output",
+        f"Model output\n({model_type})",
         "Model error",
         "Model range\nerror",
         "Model null\nerror",
@@ -388,9 +421,9 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname, model=No
     for ri, (name, (recon_np, err_np, e_ran_np, e_nul_np), mdata) in enumerate(rows):
         is_top = ri == 0
 
-        def title(col_i, metric=""):
+        def title(col_i, metric="", _top=is_top):
             hdr = ALL_HDRS[col_i]
-            if is_top:
+            if _top:
                 return f"{hdr}\n{metric}" if metric else hdr
             return metric
 
@@ -423,7 +456,7 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname, model=No
                 title(5, f"RMSE={rmse(e_nul_np):.3e}"),
                 cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
 
-        # Cols 6–9: model (only when has_model)
+        # Cols 6–9: model
         if has_model:
             if mdata is not None:
                 m_img, m_err, m_ran, m_nul = mdata
@@ -442,14 +475,15 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname, model=No
             else:
                 for ci in range(6, 10):
                     axes[ri, ci].axis("off")
-                    axes[ri, ci].text(0.5, 0.5, "N/A", ha="center", va="center",
-                                      fontsize=9, transform=axes[ri, ci].transAxes)
+                    axes[ri, ci].text(
+                        0.5, 0.5, "no checkpoint", ha="center", va="center",
+                        fontsize=8, color="#888888",
+                        transform=axes[ri, ci].transAxes,
+                    )
 
-    model_label = (f"  |  model: {type(model).__name__}") if has_model else ""
     fig.suptitle(
         f"Init × decomposition  ({fname})  |  "
-        f"{res}×{res}  |  {n_angles} angles total, {n_la} LA"
-        + model_label,
+        f"{res}×{res}  |  {n_angles} angles total, {n_la} LA",
         fontsize=10, y=1.01,
     )
     plt.tight_layout()
@@ -495,8 +529,8 @@ def main():
     print("  det_count  : %d" % det_count)
     print("  svd_thresh : %s" % svd_thresh)
     print("  device     : %s" % device)
-    if args.nsn_checkpoint:
-        print("  checkpoint : %s  (%s)" % (args.nsn_checkpoint, args.model_type))
+    if args.model_dir:
+        print("  model-dir  : %s  (%s)" % (args.model_dir, args.model_type))
     print("=" * 60)
 
     print("\nBuilding AstraRadonAdapter ...")
@@ -523,33 +557,27 @@ def main():
         print("  ERROR constructing MatrixRadonAdapter: %s" % e)
         sys.exit(1)
 
-    # Optional: load a model to show alongside each init
-    model = None
-    if args.nsn_checkpoint:
-        try:
-            model = _load_model(args.nsn_checkpoint, args.model_type, matrix_r, device)
-        except Exception as e:
-            print("  WARNING: could not load checkpoint — model columns will be skipped. (%s)" % e)
-
     n_fail = 0
+
+    vis_kwargs = dict(model_dir=args.model_dir, model_type=args.model_type)
 
     print("\nRunning synthetic phantom test ...")
     x = make_phantom(res, device, dtype)
     n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
     visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
-                      fname="radon_test.png", model=model)
+                      fname="radon_test.png", **vis_kwargs)
 
     print("\nRunning single-ellipse phantom test ...")
     x = make_phantom_single(res)
     n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
     visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
-                      fname="radon_test_single.png", model=model)
+                      fname="radon_test_single.png", **vis_kwargs)
 
     print("\nRunning multi-ellipse phantom test ...")
     x = make_phantom_multiple(res)
     n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
     visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
-                      fname="radon_test_multiple.png", model=model)
+                      fname="radon_test_multiple.png", **vis_kwargs)
     import matplotlib.pyplot as plt
 
     s = matrix_r._s_k_la.cpu().numpy()          # singular values of A_la, sorted descending
