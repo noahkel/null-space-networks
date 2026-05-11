@@ -279,7 +279,8 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname):
     fbp_astra_x = astra_r.fbp(sino_astra_x)
     fbp_astra_la_x = astra_r.fbp_la(sino_astra_la_x)
     fbp_matrix_la_x = matrix_r.fbp_la(sino_matrix_la_x)
-
+    fm_x = to_np(matrix_r.fbp(sino_matrix_x))
+    fp_x = to_np(matrix_r.backward(sino_matrix_x))
      # Pseudoinverse: A_la^+ y_la  (exact via truncated SVD, matrix adapter only)
 
     pinv_matrix_la_x = matrix_r.backward_la(sino_matrix_la_x)
@@ -358,18 +359,19 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname):
     _imshow(axes[0][2], sa_la_x,
             f"ASTRA\nLA sinogram ({n_la}/{n_angles})",
             vmin=s_min, vmax=s_max, aspect="auto")
-    _imshow(axes[0][3], sm_la_x,
-            f"Matrix\nLA sinogram ({n_la}/{n_angles})",
-            vmin=s_min, vmax=s_max, aspect="auto")
-    _imshow(axes[0][4], sm_la_x,
-            f"Matrix\nLA sinogram ({n_la}/{n_angles} angles)",
-            vmin=s_min, vmax=s_max, aspect="auto")
+    _imshow(axes[0][3], fa_x, "ASTRA Full FBP\n(reference)", vmin=r_min, vmax=r_max)
+    _imshow(axes[0][4], fa_la_x, f"ASTRA LA FBP\n({n_la}/{n_angles})", vmin=r_min, vmax=r_max)
+
     axes[0][4].axis("off")
 
     # ── Row 1: Reconstructions ────────────────────────────────────────────
     axes[1][0].axis("off")
-    _imshow(axes[1][1], fa_x, "ASTRA Full FBP\n(reference)", vmin=r_min, vmax=r_max)
-    _imshow(axes[1][2], fa_la_x, f"ASTRA LA FBP\n({n_la}/{n_angles})", vmin=r_min, vmax=r_max)
+    _imshow(axes[1][1], sm_x,
+            f"Matrix\nFull sinogram ({n_la}/{n_angles} angles)",
+            vmin=s_min, vmax=s_max, aspect="auto")
+    _imshow(axes[1][2], sm_la_x,
+            f"Matrix\nLA sinogram ({n_la}/{n_angles})",
+            vmin=s_min, vmax=s_max, aspect="auto")
     _imshow(axes[1][3], fm_la_x, f"Matrix LA FBP\n({n_la}/{n_angles})", vmin=r_min, vmax=r_max)
     _imshow(axes[1][4], fp_la_x, f"Matrix LA Pinv  $A_{{la}}^+y$\n({n_la}/{n_angles})",
             vmin=r_min, vmax=r_max)
@@ -393,8 +395,9 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname):
     # ── Row 3: Range-space error component ───────────────────────────────
     _rowlabel(axes[3][0],
               "Range error\n$A_{la}^+ A_{la}\, e$\n(visible to scanner)")
-    axes[3][1].axis("off")  # no SVD for ASTRA
-    axes[3][2].axis("off")
+    _imshow(axes[3][1], fm_x, f"Matrix FBP\n({n_la}/{n_angles})", vmin=r_min, vmax=r_max)
+    _imshow(axes[3][2], fp_x, f"Matrix Pinv  $A_{{la}}^+y$\n({n_la}/{n_angles})",
+            vmin=r_min, vmax=r_max)
     _imshow(axes[3][3], e_mla_ran,
             f"Matrix LA FBP\nRMSE={rmse(e_mla_ran):.3e}",
             cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
