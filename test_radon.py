@@ -243,6 +243,11 @@ def parse_args():
     p.add_argument("--cache-dir",  type=str,   default="radon_cache", help="Cache directory for matrix/SVD files")
     p.add_argument("--device",     type=str,   default=None, help="Device: cpu / cuda / cuda:0 ...")
     p.add_argument("--full",       action="store_true",      help="Params: 128x128, 180 angles")
+    p.add_argument("--nsn-checkpoint", type=str, default=None,
+                   help="Path to a model checkpoint (.pt) to visualise alongside each init")
+    p.add_argument("--model-type", type=str,   default="nsn",
+                   choices=["nsn", "resnet", "dpnsn", "dpnsn_res"],
+                   help="Model architecture to load from --nsn-checkpoint (default: nsn)")
     return p.parse_args()
 
 def run_tests(x, astra_r, matrix_r, svd_thresh):
@@ -269,175 +274,201 @@ def run_tests(x, astra_r, matrix_r, svd_thresh):
 def to_np(t: torch.Tensor) -> np.ndarray:
     return t.detach().cpu().float().numpy()
 
-def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname):
-    # ── Forward passes ────────────────────────────────────────────────────
-    sino_astra_x = astra_r.forward(x)
-    sino_matrix_x = matrix_r.forward(x)
-    sino_astra_la_x = astra_r.proj_ran(sino_astra_x)
-    sino_matrix_la_x = matrix_r.proj_ran(sino_matrix_x)
 
-    fbp_astra_x = astra_r.fbp(sino_astra_x)
-    fbp_astra_la_x = astra_r.fbp_la(sino_astra_la_x)
-    fbp_matrix_la_x = matrix_r.fbp_la(sino_matrix_la_x)
+def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname, model=None):
+    """
+    Grid: one row per init method, columns show the reconstruction, its error
+    against ground truth, and the error decomposed into range- and null-space
+    components.  If *model* is given, four additional columns show the same
+    breakdown for the model output.
 
-    fm_x = to_np(matrix_r.fbp(sino_matrix_x)[0,0])
-    fp_x = to_np(matrix_r.backward(sino_matrix_x)[0,0])
-     # Pseudoinverse: A_la^+ y_la  (exact via truncated SVD, matrix adapter only)
+    Layout
+    ------
+    Col 0  : row label (init name)
+    Col 1  : ground truth
+    Col 2  : init reconstruction
+    Col 3  : total error  (recon − GT)
+    Col 4  : range error  A_la^+ A_la e
+    Col 5  : null error   e − A_la^+ A_la e
+    Col 6  : model output          ┐
+    Col 7  : model total error     │ only when model is not None
+    Col 8  : model range error     │
+    Col 9  : model null error      ┘
+    """
+    x_gt_np = to_np(x[0, 0])
 
-    pinv_matrix_la_x = matrix_r.backward_la(sino_matrix_la_x)
+    # ── Sinograms ─────────────────────────────────────────────────────────────
+    sino_a_full = astra_r.forward(x)
+    sino_a_la   = astra_r.proj_ran(sino_a_full)
+    sino_m_la   = matrix_r.proj_ran(matrix_r.forward(x))  # shared LA measurement
 
-    # ── Convert to numpy ──────────────────────────────────────────────────
-    x_gt    = to_np(x[0, 0])
-    sa_x    = to_np(sino_astra_x[0, 0])
-    sm_x    = to_np(sino_matrix_x[0, 0])
-    sa_la_x = to_np(sino_astra_la_x[0, 0])
-    sm_la_x = to_np(sino_matrix_la_x[0, 0])
-    fa_x    = to_np(fbp_astra_x[0, 0])
-    fa_la_x = to_np(fbp_astra_la_x[0, 0])
-    fm_la_x = to_np(fbp_matrix_la_x[0, 0])
+    # ── Init reconstructions ──────────────────────────────────────────────────
+    init_tensors = [
+        ("FBP\n(Astra, full)",  astra_r.fbp(sino_a_full)),
+        ("FBP\n(Astra, LA)",    astra_r.fbp_la(sino_a_la)),
+        ("FBP\n(Matrix, LA)",   matrix_r.fbp_la(sino_m_la)),
+        ("Pinv\n(Matrix, LA)",  matrix_r.backward_la(sino_m_la)),
+    ]
 
-    fp_la_x = to_np(pinv_matrix_la_x[0, 0])
-
-    # ── Errors ────────────────────────────────────────────────────────────
-    e_af = fa_x - x_gt  # ASTRA full FBP
-    e_ala = fa_la_x - x_gt  # ASTRA LA  FBP
-    e_mla = fm_la_x - x_gt  # Matrix LA FBP
-    e_pinv = fp_la_x - x_gt  # Matrix LA Pinv
-
-    # ── Error decomposition for Matrix LA FBP and Pinv ────────────────────
-    # Range component: A_la^+ A_la e  (what the scanner can see in the error)
-    # Null component:  e - range       (what the scanner cannot see)
-    def decompose(e_np: np.ndarray):
-        e_t = torch.from_numpy(e_np).to(dtype=matrix_r.dtype,
-                                        device=matrix_r.device).unsqueeze(0).unsqueeze(0)
+    # ── Error decomposition helper ────────────────────────────────────────────
+    def decomp(recon_t):
+        """Returns (recon_np, err_np, e_ran_np, e_nul_np) — all (H, W) float32."""
+        r64 = recon_t.to(dtype=matrix_r.dtype, device=matrix_r.device)
+        x64 = x.to(dtype=matrix_r.dtype, device=matrix_r.device)
+        e_t     = r64 - x64
         e_ran_t = matrix_r.backward_la(matrix_r.forward_la(e_t))
         e_nul_t = matrix_r.proj_null_la(e_t)
-        return to_np(e_ran_t[0, 0]), to_np(e_nul_t[0, 0])
+        return (
+            to_np(recon_t[0, 0]),
+            to_np(e_t[0, 0]),
+            to_np(e_ran_t[0, 0]),
+            to_np(e_nul_t[0, 0]),
+        )
 
-    e_mla_ran, e_mla_nul = decompose(e_mla)
-    e_pinv_ran, e_pinv_nul = decompose(e_pinv)
+    # ── Per-row data ──────────────────────────────────────────────────────────
+    rows = []
+    for name, recon_t in init_tensors:
+        init_data = decomp(recon_t)
 
-    # ── Shared colour limits ───────────────────────────────────────────────
+        model_data = None
+        if model is not None:
+            model.eval()
+            with torch.no_grad():
+                out = model(recon_t.float(), sino_m_la.float())
+            model_data = decomp(out.to(dtype=matrix_r.dtype))
+
+        rows.append((name, init_data, model_data))
+
+    # ── Shared colour scales ───────────────────────────────────────────────────
     def rmse(e): return float(np.sqrt(np.mean(e ** 2)))
 
-    e_abs = max(np.abs(e_af).max(), np.abs(e_ala).max(), np.abs(e_mla).max(), np.abs(e_pinv).max())
-    # decomposition panels share a separate scale (range/null errors are smaller)
-    d_abs = max(np.abs(e_mla_ran).max(), np.abs(e_mla_nul).max(),
-                np.abs(e_pinv_ran).max(), np.abs(e_pinv_nul).max())
+    all_imgs   = [x_gt_np] + [r[1][0] for r in rows]
+    all_errs   = [r[1][1] for r in rows]
+    all_decomp = [r[1][2] for r in rows] + [r[1][3] for r in rows]
 
-    r_min = min(fa_x.min(), fa_la_x.min(), fm_la_x.min(), fp_la_x.min(), x_gt.min())
-    r_max = max(fa_x.max(), fa_la_x.max(), fm_la_x.max(), fp_la_x.max(), x_gt.max())
-    s_min = min(sa_x.min(), sm_x.min())
-    s_max = max(sa_x.max(), sm_x.max())
+    has_model = model is not None
+    if has_model:
+        all_imgs   += [r[2][0] for r in rows if r[2] is not None]
+        all_errs   += [r[2][1] for r in rows if r[2] is not None]
+        all_decomp += [r[2][2] for r in rows if r[2] is not None]
+        all_decomp += [r[2][3] for r in rows if r[2] is not None]
 
-    # -- Figure layout (5 rows × 5 cols) -----------------------------------
-    #
-    #  Cols: label/GT | ASTRA full (ref) | ASTRA LA FBP | Matrix LA FBP | Matrix LA Pinv
-    #
-    #  Row 0  Sinograms
-    #  Row 1  Reconstructions
-    #  Row 2  Error  (recon − GT)
-    #  Row 3  Range-space error  A_la^+ A_la e       ← what the scanner sees in the error
-    #  Row 4  Null-space  error  e − A_la^+ A_la e   ← what the scanner cannot see
+    r_min  = min(a.min() for a in all_imgs)
+    r_max  = max(a.max() for a in all_imgs)
+    e_abs  = max(np.abs(a).max() for a in all_errs)   if all_errs   else 1.0
+    d_abs  = max(np.abs(a).max() for a in all_decomp) if all_decomp else 1.0
 
-    sino_ratio = max(n_la / res, 0.4)
+    # ── Figure ────────────────────────────────────────────────────────────────
+    n_rows = len(rows)
+    n_cols = 10 if has_model else 6        # label + GT + 4 init + [4 model]
 
-    fig = plt.figure(figsize=(20, sino_ratio * 4 + 4 * 4 + 1))
-    gs  = fig.add_gridspec(
-        5, 5,
-        height_ratios=[sino_ratio, 1, 1, 1, 1],
-        hspace=0.55, wspace=0.35,
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(2.8 * n_cols, 3.2 * n_rows),
+        squeeze=False,
     )
-    axes = [[fig.add_subplot(gs[r, c]) for c in range(5)] for r in range(5)]
 
-    # ── Row 0: Sinograms ──────────────────────────────────────────────────
-    _imshow(axes[0][0], x_gt,
-            "Ground Truth",
-            aspect="equal")
-    _imshow(axes[0][1], sa_x,
-            "ASTRA\nFull sinogram",
-            vmin=s_min, vmax=s_max, aspect="auto")
-    _imshow(axes[0][2], sa_la_x,
-            f"ASTRA\nLA sinogram ({n_la}/{n_angles})",
-            vmin=s_min, vmax=s_max, aspect="auto")
-    _imshow(axes[0][3], fa_x, "ASTRA Full FBP\n(reference)", vmin=r_min, vmax=r_max)
-    _imshow(axes[0][4], fa_la_x, f"ASTRA LA FBP\n({n_la}/{n_angles})", vmin=r_min, vmax=r_max)
-
-    axes[0][4].axis("off")
-
-    # ── Row 1: Reconstructions ────────────────────────────────────────────
-    axes[1][0].axis("off")
-    _imshow(axes[1][1], sm_x,
-            f"Matrix\nFull sinogram ({n_la}/{n_angles} angles)",
-            vmin=s_min, vmax=s_max, aspect="auto")
-    _imshow(axes[1][2], sm_la_x,
-            f"Matrix\nLA sinogram ({n_la}/{n_angles})",
-            vmin=s_min, vmax=s_max, aspect="auto")
-    _imshow(axes[1][3], fm_la_x, f"Matrix LA FBP\n({n_la}/{n_angles})", vmin=r_min, vmax=r_max)
-    _imshow(axes[1][4], fp_la_x, f"Matrix LA Pinv  $A_{{la}}^+y$\n({n_la}/{n_angles})",
-            vmin=r_min, vmax=r_max)
-
-    # ── Row 2: Total error (recon − GT) ───────────────────────────────────
-    _rowlabel(axes[2][0], "Total error\n(recon − GT)")
-
-    _imshow(axes[2][1], e_af,
-            f"ASTRA Full FBP\nRMSE={rmse(e_af):.3e}",
-            cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
-    _imshow(axes[2][2], e_ala,
-            f"ASTRA LA FBP\nRMSE={rmse(e_ala):.3e}",
-            cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
-    _imshow(axes[2][3], e_mla,
-            f"Matrix LA FBP\nRMSE={rmse(e_mla):.3e}",
-            cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
-    _imshow(axes[2][4], e_pinv,
-            f"Matrix LA Pinv\nRMSE={rmse(e_pinv):.3e}",
-            cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
-
-    # ── Row 3: Range-space error component ───────────────────────────────
-    _rowlabel(axes[3][0],
-              "Range error\n$A_{la}^+ A_{la}\, e$\n(visible to scanner)")
-    _imshow(axes[3][1], fm_x, f"Matrix FBP\n({n_la}/{n_angles})", vmin=r_min, vmax=r_max)
-    _imshow(axes[3][2], fp_x, f"Matrix Pinv  $A_{{la}}^+y$\n({n_la}/{n_angles})",
-            vmin=r_min, vmax=r_max)
-    _imshow(axes[3][3], e_mla_ran,
-            f"Matrix LA FBP\nRMSE={rmse(e_mla_ran):.3e}",
-            cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
-    _imshow(axes[3][4], e_pinv_ran,
-            f"Matrix LA Pinv\nRMSE={rmse(e_pinv_ran):.3e}  (≈ 0)",
-            cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
-
-    # ── Row 4: Null-space error component ────────────────────────────────
-    _rowlabel(axes[4][0],
-              "Null error\n$e - A_{la}^+ A_{la}\, e$\n(invisible to scanner)")
-    axes[4][1].axis("off")
-    axes[4][2].axis("off")
-    _imshow(axes[4][3], e_mla_nul,
-            f"Matrix LA FBP\nRMSE={rmse(e_mla_nul):.3e}",
-            cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
-    _imshow(axes[4][4], e_pinv_nul,
-            f"Matrix LA Pinv\nRMSE={rmse(e_pinv_nul):.3e}",
-            cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
-
-    # ── Row labels ────────────────────────────────────────────────────────
-    row_titles = [
-        "Sinograms",
-        "Reconstructions",
-        "Total error (recon − GT)",
-        "Range-space error\n(scanner-visible)",
-        "Null-space error\n(scanner-invisible)",
+    # Column headers (only shown on the first row)
+    INIT_HDRS = [
+        "",
+        "Ground Truth",
+        "Init recon",
+        "Total error\n(recon − GT)",
+        "Range error\n$A_{la}^+A_{la}\\,e$\n(scanner-visible)",
+        "Null error\n$e - A_{la}^+A_{la}\\,e$\n(scanner-invisible)",
     ]
-    for r, lbl in enumerate(row_titles):
-        axes[r][0].set_ylabel(lbl, fontsize=8, fontweight="bold", labelpad=6)
+    MODEL_HDRS = [
+        "Model output",
+        "Model error",
+        "Model range\nerror",
+        "Model null\nerror",
+    ]
+    ALL_HDRS = INIT_HDRS + (MODEL_HDRS if has_model else [])
 
+    for ri, (name, (recon_np, err_np, e_ran_np, e_nul_np), mdata) in enumerate(rows):
+        is_top = ri == 0
+
+        def title(col_i, metric=""):
+            hdr = ALL_HDRS[col_i]
+            if is_top:
+                return f"{hdr}\n{metric}" if metric else hdr
+            return metric
+
+        # Col 0: row label
+        axes[ri, 0].axis("off")
+        axes[ri, 0].text(0.5, 0.5, name, ha="center", va="center",
+                         fontsize=9, fontweight="bold",
+                         transform=axes[ri, 0].transAxes)
+
+        # Col 1: ground truth
+        _imshow(axes[ri, 1], x_gt_np, title(1), vmin=r_min, vmax=r_max)
+
+        # Col 2: init reconstruction
+        _imshow(axes[ri, 2], recon_np,
+                title(2, f"RMSE={rmse(err_np):.3e}"),
+                vmin=r_min, vmax=r_max)
+
+        # Col 3: total error
+        _imshow(axes[ri, 3], err_np,
+                title(3, f"RMSE={rmse(err_np):.3e}"),
+                cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
+
+        # Col 4: range error
+        _imshow(axes[ri, 4], e_ran_np,
+                title(4, f"RMSE={rmse(e_ran_np):.3e}"),
+                cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
+
+        # Col 5: null error
+        _imshow(axes[ri, 5], e_nul_np,
+                title(5, f"RMSE={rmse(e_nul_np):.3e}"),
+                cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
+
+        # Cols 6–9: model (only when has_model)
+        if has_model:
+            if mdata is not None:
+                m_img, m_err, m_ran, m_nul = mdata
+                _imshow(axes[ri, 6], m_img,
+                        title(6, f"RMSE={rmse(m_err):.3e}"),
+                        vmin=r_min, vmax=r_max)
+                _imshow(axes[ri, 7], m_err,
+                        title(7, f"RMSE={rmse(m_err):.3e}"),
+                        cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
+                _imshow(axes[ri, 8], m_ran,
+                        title(8, f"RMSE={rmse(m_ran):.3e}"),
+                        cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
+                _imshow(axes[ri, 9], m_nul,
+                        title(9, f"RMSE={rmse(m_nul):.3e}"),
+                        cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
+            else:
+                for ci in range(6, 10):
+                    axes[ri, ci].axis("off")
+                    axes[ri, ci].text(0.5, 0.5, "N/A", ha="center", va="center",
+                                      fontsize=9, transform=axes[ri, ci].transAxes)
+
+    model_label = (f"  |  model: {type(model).__name__}") if has_model else ""
     fig.suptitle(
-        f"Radon comparison  ({fname})  |  "
-        f"{res}×{res}  |  {n_angles} angles total,  {n_la} LA",
+        f"Init × decomposition  ({fname})  |  "
+        f"{res}×{res}  |  {n_angles} angles total, {n_la} LA"
+        + model_label,
         fontsize=10, y=1.01,
     )
-
+    plt.tight_layout()
     plt.savefig(fname, dpi=150, bbox_inches="tight")
     print(f"\nSaved → {fname}")
     plt.close(fig)
+
+def _load_model(checkpoint_path, model_type, matrix_r, device):
+    """Load a model checkpoint and return the model in eval mode."""
+    from src.utils import build_models
+    beta = 1.0  # placeholder — not used by NSN/ResNet
+    model = build_models([model_type], radon=matrix_r, beta=beta)[model_type].to(device)
+    ckpt = torch.load(checkpoint_path, map_location=device)
+    state = ckpt.get("state_dict", ckpt)
+    model.load_state_dict(state)
+    model.eval()
+    print(f"  Loaded {model_type} from {checkpoint_path}")
+    return model
+
 
 def main():
     args = parse_args()
@@ -464,6 +495,8 @@ def main():
     print("  det_count  : %d" % det_count)
     print("  svd_thresh : %s" % svd_thresh)
     print("  device     : %s" % device)
+    if args.nsn_checkpoint:
+        print("  checkpoint : %s  (%s)" % (args.nsn_checkpoint, args.model_type))
     print("=" * 60)
 
     print("\nBuilding AstraRadonAdapter ...")
@@ -489,24 +522,34 @@ def main():
     except Exception as e:
         print("  ERROR constructing MatrixRadonAdapter: %s" % e)
         sys.exit(1)
-    
+
+    # Optional: load a model to show alongside each init
+    model = None
+    if args.nsn_checkpoint:
+        try:
+            model = _load_model(args.nsn_checkpoint, args.model_type, matrix_r, device)
+        except Exception as e:
+            print("  WARNING: could not load checkpoint — model columns will be skipped. (%s)" % e)
+
     n_fail = 0
 
-    print("\nRunning single phantom test ...")
+    print("\nRunning synthetic phantom test ...")
     x = make_phantom(res, device, dtype)
     n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
-    visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname="radon_test.png")
+    visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
+                      fname="radon_test.png", model=model)
 
-    print("\nRunning single phantom test from create_ellipse_data ...")
+    print("\nRunning single-ellipse phantom test ...")
     x = make_phantom_single(res)
     n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
-    visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname="radon_test_single.png")
+    visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
+                      fname="radon_test_single.png", model=model)
 
-    
-    print("\nRunning multiple phantom test from create_ellipse_data ...")
+    print("\nRunning multi-ellipse phantom test ...")
     x = make_phantom_multiple(res)
     n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
-    visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname="radon_test_multiple.png")
+    visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
+                      fname="radon_test_multiple.png", model=model)
     import matplotlib.pyplot as plt
 
     s = matrix_r._s_k_la.cpu().numpy()          # singular values of A_la, sorted descending
