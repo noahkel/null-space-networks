@@ -47,11 +47,17 @@ def single_ellipse_generator(dataset, part='train'):
     it = repeat(None, n) if n is not None else repeat(None)
     for _ in it:
         # One ellipse: [value, a1, a2, x_center, y_center, rotation]
-        v  = r.uniform(0.3, 1.0)
-        a1 = 0.2 * r.exponential(1.0)
-        a2 = 0.2 * r.exponential(1.0)
-        x  = r.uniform(-0.7, 0.7)
-        y  = r.uniform(-0.7, 0.7)
+        min_area = 5  # set your threshold here
+
+        while True:
+            a1 = 0.2 * r.exponential(1.0)
+            a2 = 0.2 * r.exponential(1.0)
+            if np.pi * a1 * a2 >= min_area:
+                break
+
+        v = r.uniform(0.3, 1.0)
+        x = r.uniform(-0.7, 0.7)
+        y = r.uniform(-0.7, 0.7)
         rot = r.uniform(0., 2 * np.pi)
         ellipsoids = np.array([[v, a1, a2, x, y, rot]])
         image = ellipsoid_phantom(dataset.space, ellipsoids)
@@ -106,6 +112,7 @@ def main():
     #ensure_dir(OUT_DIR / "lw")
     ensure_dir(OUT_DIR / "sino")
     ensure_dir(OUT_DIR / "pinv")
+    ensure_dir(OUT_DIR / "tikh")
 
     # dataset
     dataset = EllipsesDataset(image_size=IMG_SIZE)
@@ -162,12 +169,13 @@ def main():
         # massive noise amplification of the plain pseudoinverse while still
         # producing a range-consistent (zero null-space component) initialisation.
         sigma_sino = NOISE_sigma_REL * float(y.abs().max())
-        x_pinv = radon.backward_la_tikhonov(y_delta, lambda_reg=sigma_sino ** 2).squeeze()
-
+        x_pinv = radon.backward_la(y_delta).squeeze()
+        x_tikh = radon.backward_la_tikhonov(y_delta, lambda_reg=sigma_sino ** 2).squeeze()
         np.save(OUT_DIR / "gt" / f"{i:05d}.npy", x_gt.detach().cpu().numpy())
         np.save(OUT_DIR / "fbp" / f"{i:05d}.npy", x_fbp.detach().cpu().numpy())
         np.save(OUT_DIR / "pinv" / f"{i:05d}.npy", x_pinv.detach().cpu().numpy())
         np.save(OUT_DIR / "sino" / f"{i:05d}.npy", y_delta.squeeze().detach().cpu().numpy())
+        np.save(OUT_DIR / "tikh" / f"{i:05d}.npy", x_tikh.squeeze().detach().cpu().numpy())
 
         samples.append((x_gt, y_delta))
 
