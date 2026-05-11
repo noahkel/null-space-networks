@@ -2,7 +2,7 @@
 #SBATCH --job-name=matrix
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
-#SBATCH --partition=all
+#SBATCH --nodelist=mp-gpu4-a100-1
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=noah.keltsch@uibk.ac.at
 
@@ -38,14 +38,12 @@ echo "============================================"
 
 
 IMG_SIZE=128
-NOISE=0.02
+NOISE=0.01
 MIN_ANGLE=0
 MAX_ANGLE=120
 NUM_THETAS=180
 N_SAMPLES=5000
 TYPE="ellipses"
-
-#python -u test_radon.py --full
 
 echo "finished test_radon.py at: $(date)"
 
@@ -68,9 +66,12 @@ python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $D
 
 echo "Finished Adversarial Attack at: $(date)"
 
+python -u test_radon.py
+
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 echo "Job finished at $(date)"
+
 
 curl -s -d "Job $SLURM_JOB_ID ($SLURM_JOB_NAME) finished at $(date)" \
      "https://ntfy.sh/$NTFY"

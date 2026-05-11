@@ -47,7 +47,7 @@ def single_ellipse_generator(dataset, part='train'):
     it = repeat(None, n) if n is not None else repeat(None)
     for _ in it:
         # One ellipse: [value, a1, a2, x_center, y_center, rotation]
-        min_area = 5  # set your threshold here
+        min_area = 0.5  # set your threshold here
 
         while True:
             a1 = 0.2 * r.exponential(1.0)
