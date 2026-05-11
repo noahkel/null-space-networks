@@ -407,17 +407,8 @@ class MatrixRadonAdapter(_RadonBase):
         y_compact = torch.sparse.mm(self._A_la, x_flat.t()).t()   # (B*C, n_la*det)
         y_compact = y_compact.reshape(B * C, self.n_la, self.det_count)
 
-        # Embed into full-shape tensor (n_angles rows), zeros for non-LA angles
-        la_mask = torch.from_numpy(
-            (self.angles >= self.phi[0]) & (self.angles < self.phi[1])
-        ).to(device=self.device)
-        y_full = torch.zeros(
-            B * C, len(self.angles), self.det_count,
-            device=self.device, dtype=self.dtype,
-        )
-        y_full[:, la_mask, :] = y_compact
-        return (y_full.reshape(B, C, len(self.angles), self.det_count)
-                .to(device=x.device, dtype=x.dtype) * self.dx)
+        return (self._compact_to_full(y_compact, B, C)
+            .to(device=x.device, dtype=x.dtype) * self.dx)
 
     # ------------------------------------------------------------------
     # Sinogram-space projections  —  SVD-based
