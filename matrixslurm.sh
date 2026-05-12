@@ -2,7 +2,7 @@
 #SBATCH --job-name=matrix
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
-#SBATCH --nodelist=mp-gpu4-a100-1
+#SBATCH --nodelist=mp-gpu4-a6000-1
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=noah.keltsch@uibk.ac.at
 

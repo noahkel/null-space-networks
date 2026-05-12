@@ -380,7 +380,7 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname,
         rows.append((name, init_data, model_data))
 
     # ── Shared colour scales ───────────────────────────────────────────────────
-    def rmse(e): return float(np.sqrt(e ** 2))
+    def rmse(e): return float(np.linalg.norm(e))
 
     all_imgs   = [x_gt_np] + [r[1][0] for r in rows]
     all_errs   = [r[1][1] for r in rows]
