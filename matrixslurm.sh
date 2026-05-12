@@ -49,20 +49,20 @@ echo "finished test_radon.py at: $(date)"
 
 # ── Data Generation (MatrixRadonAdapter, matrix_mode=1) ──────────────────────
 
-#python -u create_ellipse_data.py --img_size $IMG_SIZE --noise $NOISE --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR
+python -u create_ellipse_data.py --img_size $IMG_SIZE --noise $NOISE --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR
 
 echo "Finished Data Generation at: $(date)"
 
 # ── Training (adapter chosen from summary.json matrix_mode) ──────────────────
 
-#python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR --models resnet,nsn --init fbp,pinv,tikh
+python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR --models resnet,nsn --init fbp,pinv,tikh
 
 echo "Finished Training at: $(date)"
 
 # ── Adversarial Attacks ───────────────────────────────────────────────────────
 
-#python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR --model-dir $MODEL_DIR --models resnet,nsn --init pinv --attacks adam --norm l2
-#python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR --model-dir $MODEL_DIR --models resnet,nsn --init fbp --attacks adam --norm l2
+python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR --model-dir $MODEL_DIR --models resnet,nsn --init pinv --attacks adam --norm l2
+python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR --model-dir $MODEL_DIR --models resnet,nsn --init fbp --attacks adam --norm l2
 
 echo "Finished Adversarial Attack at: $(date)"
 
