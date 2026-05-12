@@ -439,22 +439,22 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname,
 
         # Col 2: init reconstruction
         _imshow(axes[ri, 2], recon_np,
-                title(2, f"RMSE={rmse(err_np):.3e}"),
+                title(2, f"L2 Error={rmse(err_np):.3e}"),
                 vmin=r_min, vmax=r_max)
 
         # Col 3: total error
         _imshow(axes[ri, 3], err_np,
-                title(3, f"RMSE={rmse(err_np):.3e}"),
+                title(3, f"L2 Error={rmse(err_np):.3e}"),
                 cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
 
         # Col 4: range error
         _imshow(axes[ri, 4], e_ran_np,
-                title(4, f"RMSE={rmse(e_ran_np):.3e}"),
+                title(4, f"L2 Error={rmse(e_ran_np):.3e}"),
                 cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
 
         # Col 5: null error
         _imshow(axes[ri, 5], e_nul_np,
-                title(5, f"RMSE={rmse(e_nul_np):.3e}"),
+                title(5, f"L2 Error={rmse(e_nul_np):.3e}"),
                 cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
 
         # Cols 6–9: model
@@ -462,16 +462,16 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname,
             if mdata is not None:
                 m_img, m_err, m_ran, m_nul = mdata
                 _imshow(axes[ri, 6], m_img,
-                        title(6, f"RMSE={rmse(m_err):.3e}"),
+                        title(6, f"L2 Error={rmse(m_err):.3e}"),
                         vmin=r_min, vmax=r_max)
                 _imshow(axes[ri, 7], m_err,
-                        title(7, f"RMSE={rmse(m_err):.3e}"),
+                        title(7, f"L2 Error={rmse(m_err):.3e}"),
                         cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
                 _imshow(axes[ri, 8], m_ran,
-                        title(8, f"RMSE={rmse(m_ran):.3e}"),
+                        title(8, f"L2 Error={rmse(m_ran):.3e}"),
                         cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
                 _imshow(axes[ri, 9], m_nul,
-                        title(9, f"RMSE={rmse(m_nul):.3e}"),
+                        title(9, f"L2 Error={rmse(m_nul):.3e}"),
                         cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
             else:
                 for ci in range(6, 10):
