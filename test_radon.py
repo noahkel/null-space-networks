@@ -567,23 +567,24 @@ def main():
     n_fail = 0
 
     vis_kwargs = dict(model_dir=args.model_dir, model_type=args.model_type)
+    xsyn = make_phantom(res, device, dtype)
+    xsin = make_phantom_single(res)
+    xmul = make_phantom_multiple(res)
+
     for i in ("no_noise","noise_1p"):
         print("\nRunning synthetic phantom test ...")
-        x = make_phantom(res, device, dtype)
-        n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
-        visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
+        n_fail += run_tests(xsyn, astra_r, matrix_r, svd_thresh)
+        visualise_results(xsyn, astra_r, matrix_r, n_la, res, n_angles,
                           fname=f"radon_test_{i}.png", **vis_kwargs)
 
         print("\nRunning single-ellipse phantom test ...")
-        x = make_phantom_single(res)
-        n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
-        visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
+        n_fail += run_tests(xsin, astra_r, matrix_r, svd_thresh)
+        visualise_results(xsin, astra_r, matrix_r, n_la, res, n_angles,
                           fname=f"radon_test_single_{i}.png", **vis_kwargs)
 
         print("\nRunning multi-ellipse phantom test ...")
-        x = make_phantom_multiple(res)
-        n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
-        visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
+        n_fail += run_tests(xmul, astra_r, matrix_r, svd_thresh)
+        visualise_results(xmul, astra_r, matrix_r, n_la, res, n_angles,
                           fname=f"radon_test_multiple_{i}.png", **vis_kwargs)
         import matplotlib.pyplot as plt
 
