@@ -615,7 +615,7 @@ def main():
         plt.tight_layout()
         plt.savefig("svd_spectrum.png", dpi=150)
 
-        sys.exit(0 if n_fail == 0 else 1)
+    sys.exit(0 if n_fail == 0 else 1)
 
 
 if __name__ == "__main__":
