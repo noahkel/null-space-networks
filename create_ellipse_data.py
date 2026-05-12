@@ -39,29 +39,37 @@ import argparse
 #
 
 def single_ellipse_generator(dataset, part='train'):
-    """Generator yielding images with exactly one random ellipse."""
+    """Generator yielding images with exactly one random ellipse, centered and contained."""
     seed = dataset.fixed_seeds.get(part)
     r = np.random.RandomState(seed)
     n = dataset.get_len(part=part)
     from itertools import repeat
     it = repeat(None, n) if n is not None else repeat(None)
     for _ in it:
-        # One ellipse: [value, a1, a2, x_center, y_center, rotation]
-        min_area = 0.5  # set your threshold here
+        min_area = 0.5
 
         while True:
             a1 = 0.2 * r.exponential(1.0)
             a2 = 0.2 * r.exponential(1.0)
-            if np.pi * a1 * a2 >= min_area:
+            if np.pi * a1 * a2 < min_area:
+                continue
+
+            v   = r.uniform(0.3, 1.0)
+            x   = r.uniform(-0.3, 0.3)   # tighter center range
+            y   = r.uniform(-0.3, 0.3)
+            rot = r.uniform(0., 2 * np.pi)
+
+            # max extent of rotated ellipse along each axis
+            dx = np.sqrt((a1 * np.cos(rot))**2 + (a2 * np.sin(rot))**2)
+            dy = np.sqrt((a1 * np.sin(rot))**2 + (a2 * np.cos(rot))**2)
+
+            if abs(x) + dx <= 1.0 and abs(y) + dy <= 1.0:
                 break
 
-        v = r.uniform(0.3, 1.0)
-        x = r.uniform(-0.7, 0.7)
-        y = r.uniform(-0.7, 0.7)
-        rot = r.uniform(0., 2 * np.pi)
         ellipsoids = np.array([[v, a1, a2, x, y, rot]])
         image = ellipsoid_phantom(dataset.space, ellipsoids)
         yield image
+
 
 def main():
     # Initialization of parameters
