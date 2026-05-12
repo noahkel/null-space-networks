@@ -320,12 +320,17 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname,
     Col 9  : model null error      ┘
     """
     x_gt_np = to_np(x[0, 0])
-
+    def add_noise(sino: torch.Tensor, level: float = 0.01) -> torch.Tensor:
+        sigma = level * sino.norm()
+        return sino + torch.randn_like(sino) * sigma
     # ── Sinograms ─────────────────────────────────────────────────────────────
     sino_a_full = astra_r.forward(x)
+    if not "no_" in fname:
+        sino_a_full = add_noise(sino_a_full, level=0.01)
     sino_a_la   = astra_r.proj_ran(sino_a_full)
     sino_m_la   = matrix_r.proj_ran(matrix_r.forward(x))  # shared LA measurement
-    
+    if not "no_" in fname:
+        sino_m_la = add_noise(sino_m_la, level=0.01)
 
     # ── Init methods: (display_name, init_key_for_checkpoint, recon_tensor) ──
     init_tensors = [
@@ -349,8 +354,9 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname,
         r64 = recon_t.to(dtype=matrix_r.dtype, device=matrix_r.device)
         x64 = x.to(dtype=matrix_r.dtype, device=matrix_r.device)
         e_t     = r64 - x64
-        e_ran_t = matrix_r.backward_la(matrix_r.forward_la(e_t))
         e_nul_t = matrix_r.proj_null_la(e_t)
+        e_ran_t = e_t - e_nul_t
+
         return (
             to_np(recon_t[0, 0]),
             to_np(e_t[0, 0]),
@@ -374,7 +380,7 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname,
         rows.append((name, init_data, model_data))
 
     # ── Shared colour scales ───────────────────────────────────────────────────
-    def rmse(e): return float(np.sqrt(np.mean(e ** 2)))
+    def rmse(e): return float(np.sqrt(e ** 2))
 
     all_imgs   = [x_gt_np] + [r[1][0] for r in rows]
     all_errs   = [r[1][1] for r in rows]
@@ -561,55 +567,55 @@ def main():
     n_fail = 0
 
     vis_kwargs = dict(model_dir=args.model_dir, model_type=args.model_type)
+    for i in ("no_noise","noise_1p"):
+        print("\nRunning synthetic phantom test ...")
+        x = make_phantom(res, device, dtype)
+        n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
+        visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
+                          fname=f"radon_test_{i}.png", **vis_kwargs)
 
-    print("\nRunning synthetic phantom test ...")
-    x = make_phantom(res, device, dtype)
-    n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
-    visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
-                      fname="radon_test.png", **vis_kwargs)
+        print("\nRunning single-ellipse phantom test ...")
+        x = make_phantom_single(res)
+        n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
+        visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
+                          fname=f"radon_test_single_{i}.png", **vis_kwargs)
 
-    print("\nRunning single-ellipse phantom test ...")
-    x = make_phantom_single(res)
-    n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
-    visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
-                      fname="radon_test_single.png", **vis_kwargs)
+        print("\nRunning multi-ellipse phantom test ...")
+        x = make_phantom_multiple(res)
+        n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
+        visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
+                          fname=f"radon_test_multiple_{i}.png", **vis_kwargs)
+        import matplotlib.pyplot as plt
 
-    print("\nRunning multi-ellipse phantom test ...")
-    x = make_phantom_multiple(res)
-    n_fail += run_tests(x, astra_r, matrix_r, svd_thresh)
-    visualise_results(x, astra_r, matrix_r, n_la, res, n_angles,
-                      fname="radon_test_multiple.png", **vis_kwargs)
-    import matplotlib.pyplot as plt
+        s = matrix_r._s_k_la.cpu().numpy()          # singular values of A_la, sorted descending
+        s_max = s[0]
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
 
-    s = matrix_r._s_k_la.cpu().numpy()          # singular values of A_la, sorted descending
-    s_max = s[0]
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+        # Left: full spectrum
+        ax1.semilogy(s / s_max)
+        ax1.axhline(1e-3, color='r', linestyle='--', label='1e-3')
+        ax1.axhline(1e-2, color='orange', linestyle='--', label='1e-2')
+        ax1.axhline(0.5 / s_max, color='g', linestyle='--', label=f'σ_noise/s_max ≈ {0.5/s_max:.4f}')
+        ax1.set_xlabel("Singular value index")
+        ax1.set_ylabel("s_k / s_max")
+        ax1.set_title("A_la singular value spectrum")
+        ax1.legend()
 
-    # Left: full spectrum
-    ax1.semilogy(s / s_max)
-    ax1.axhline(1e-3, color='r', linestyle='--', label='1e-3')
-    ax1.axhline(1e-2, color='orange', linestyle='--', label='1e-2')
-    ax1.axhline(0.5 / s_max, color='g', linestyle='--', label=f'σ_noise/s_max ≈ {0.5/s_max:.4f}')
-    ax1.set_xlabel("Singular value index")
-    ax1.set_ylabel("s_k / s_max")
-    ax1.set_title("A_la singular value spectrum")
-    ax1.legend()
+        # Right: how many dims in null space at each threshold
+        thresholds = np.logspace(-4, -1, 100)
+        null_dims = [(s < t * s_max).sum() for t in thresholds]
+        ax2.semilogx(thresholds, null_dims)
+        ax2.axhline(16384 / 3, color='k', linestyle='--', label='Expected (1/3 of pixels)')
+        ax2.axvline(1e-3, color='r', linestyle='--', label='1e-3')
+        ax2.set_xlabel("SVD threshold")
+        ax2.set_ylabel("Null space dimension")
+        ax2.set_title("Null space size vs threshold")
+        ax2.legend()
 
-    # Right: how many dims in null space at each threshold
-    thresholds = np.logspace(-4, -1, 100)
-    null_dims = [(s < t * s_max).sum() for t in thresholds]
-    ax2.semilogx(thresholds, null_dims)
-    ax2.axhline(16384 / 3, color='k', linestyle='--', label='Expected (1/3 of pixels)')
-    ax2.axvline(1e-3, color='r', linestyle='--', label='1e-3')
-    ax2.set_xlabel("SVD threshold")
-    ax2.set_ylabel("Null space dimension")
-    ax2.set_title("Null space size vs threshold")
-    ax2.legend()
+        plt.tight_layout()
+        plt.savefig("svd_spectrum.png", dpi=150)
 
-    plt.tight_layout()
-    plt.savefig("svd_spectrum.png", dpi=150)
-
-    sys.exit(0 if n_fail == 0 else 1)
+        sys.exit(0 if n_fail == 0 else 1)
 
 
 if __name__ == "__main__":
