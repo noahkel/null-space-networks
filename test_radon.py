@@ -542,11 +542,11 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
         # ── Sinograms ─────────────────────────────────────────────────────────────
         sino_a_full.append(astra_r.forward(x))
         if not "no_" in fname:
-            sino_a_full = add_noise(sino_a_full[-1], level=0.01)
+            sino_a_full[-1] = add_noise(sino_a_full[-1], level=0.01)
         sino_a_la.append(astra_r.proj_ran(sino_a_full[-1]))
         sino_m_la.append(matrix_r.proj_ran(matrix_r.forward(x)))  # shared LA measurement
         if not "no_" in fname:
-            sino_m_la = add_noise(sino_m_la[-1], level=0.01)
+            sino_m_la[-1] = add_noise(sino_m_la[-1], level=0.01)
 
         # ── Init methods: (display_name, init_key_for_checkpoint, recon_tensor) ──
         init_tensors = [
@@ -591,7 +591,7 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
             if row_model is not None:
                 row_model.eval()
                 with torch.no_grad():
-                    out = row_model(recon_t.float().to(device), sino_m_la.float().to(device))
+                    out = row_model(recon_t.float().to(device), sino_m_la[-1].float().to(device))
                 model_data = decomp(out.to(dtype=matrix_r.dtype))
 
             rows.append((name, init_data, model_data))
@@ -600,7 +600,7 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
         # ── Shared colour scales ───────────────────────────────────────────────────
         def rmse(e): return float(np.sqrt(np.mean(e ** 2)))
 
-        all_imgs   = [x_gt_np] + [r[1][0] for r in rows]
+        all_imgs   = [x_gt_np[-1]] + [r[1][0] for r in rows]
         all_errs   = [r[1][1] for r in rows]
         all_decomp = [r[1][2] for r in rows] + [r[1][3] for r in rows]
 
@@ -659,25 +659,25 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
                              transform=axes[ri, 0].transAxes)
 
             # Col 1: ground truth
-            _imshow(axes[ri, 1], x_gt_np[i], title(1), vmin=r_min, vmax=r_max)
+            _imshow(axes[i * len(rows) + ri, 1], x_gt_np[i], title(1), vmin=r_min, vmax=r_max)
 
             # Col 2: init reconstruction
-            _imshow(axes[ri, 2], recon_np,
+            _imshow(axes[i * len(rows) + ri, 2], recon_np,
                     title(2, f"RMSE Error={rmse(err_np):.3e}"),
                     vmin=r_min, vmax=r_max)
 
             # Col 3: total error
-            _imshow(axes[ri, 3], err_np,
+            _imshow(axes[i * len(rows) + ri, 3], err_np,
                     title(3, f"RMSE Error={rmse(err_np):.3e}"),
                     cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
 
             # Col 4: range error
-            _imshow(axes[ri, 4], e_ran_np,
+            _imshow(axes[i * len(rows) + ri, 4], e_ran_np,
                     title(4, f"RMSE Error={rmse(e_ran_np):.3e}"),
                     cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
 
             # Col 5: null error
-            _imshow(axes[ri, 5], e_nul_np,
+            _imshow(axes[i * len(rows) + ri, 5], e_nul_np,
                     title(5, f"RMSE Error={rmse(e_nul_np):.3e}"),
                     cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
 
@@ -685,22 +685,22 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
             if has_model:
                 if mdata is not None:
                     m_img, m_err, m_ran, m_nul = mdata
-                    _imshow(axes[ri, 6], m_img,
+                    _imshow(axes[i * len(rows) + ri, 6], m_img,
                             title(6, f"RMSE Error={rmse(m_err):.3e}"),
                             vmin=r_min, vmax=r_max)
-                    _imshow(axes[ri, 7], m_err,
+                    _imshow(axes[i * len(rows) + ri, 7], m_err,
                             title(7, f"RMSE Error={rmse(m_err):.3e}"),
                             cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
-                    _imshow(axes[ri, 8], m_ran,
+                    _imshow(axes[i * len(rows) + ri, 8], m_ran,
                             title(8, f"RMSE Error={rmse(m_ran):.3e}"),
                             cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
-                    _imshow(axes[ri, 9], m_nul,
+                    _imshow(axes[i * len(rows) + ri, 9], m_nul,
                             title(9, f"RMSE Error={rmse(m_nul):.3e}"),
                             cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
                 else:
                     for ci in range(6, 10):
-                        axes[ri, ci].axis("off")
-                        axes[ri, ci].text(
+                        axes[i * len(rows) + ri, ci].axis("off")
+                        axes[i * len(rows) + ri, ci].text(
                             0.5, 0.5, "no checkpoint", ha="center", va="center",
                             fontsize=8, color="#888888",
                             transform=axes[ri, ci].transAxes,
