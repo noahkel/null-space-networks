@@ -94,8 +94,8 @@ def get_ellipse_dataloader(
     seed: int = 0,
 ) -> DataLoader:
     init_recon = init_recon.lower()
-    if init_recon not in ("tv", "fbp", "lw", "pinv", "tikh"):
-        raise ValueError("init_recon must be one of: 'tv', 'fbp', 'lw', 'pinv', 'tikh'")
+    if init_recon not in ("tv", "fbp", "lw", "pinv", "tikh", "pinv_full"):
+        raise ValueError("init_recon must be one of: 'tv', 'fbp', 'lw', 'pinv', 'tikh', 'pinv_full'")
 
     # full dataset
     dataset = EllipsesGTInitDataset(
