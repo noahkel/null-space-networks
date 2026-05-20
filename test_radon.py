@@ -82,12 +82,12 @@ def _odl_to_4d(img) -> torch.Tensor:
     return torch.from_numpy(np.asarray(img).astype(np.float32)).unsqueeze(0).unsqueeze(0)
 
 def make_phantom_single(res):
-    dataset = EllipsesDataset(image_size=res, fixed_seeds=True)
+    dataset = EllipsesDataset(image_size=res)
     gen = single_ellipse_generator(dataset, 'train')
     return _odl_to_4d(next(gen))
 
 def make_phantom_multiple(res):
-    dataset = EllipsesDataset(image_size=res, fixed_seeds=True)
+    dataset = EllipsesDataset(image_size=res)
     return _odl_to_4d(next(dataset.generator('train')))
 # ---------------------------------------------------------------------------
 # Tests
@@ -655,8 +655,8 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
                 return metric
 
             # Col 0: row label
-            axes[ri, 0].axis("off")
-            axes[ri, 0].text(0.5, 0.5, name, ha="center", va="center",
+            axes[i * len(rows) + ri, 0].axis("off")
+            axes[i * len(rows) + ri, 0].text(0.5, 0.5, name, ha="center", va="center",
                              fontsize=9, fontweight="bold",
                              transform=axes[ri, 0].transAxes)
 
