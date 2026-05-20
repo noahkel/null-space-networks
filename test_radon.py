@@ -525,6 +525,8 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
     Col 8  : model range error     │ init has a checkpoint
     Col 9  : model null error      ┘
     """
+    if isinstance(x_is, torch.Tensor):
+        x_is = [x_is]
     sino_a_full = []
     sino_a_la = []
     sino_m_la = []
