@@ -703,7 +703,7 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
                         axes[i * len(rows) + ri, ci].text(
                             0.5, 0.5, "no checkpoint", ha="center", va="center",
                             fontsize=8, color="#888888",
-                            transform=axes[ri, ci].transAxes,
+                            transform=axes[i * len(rows) + ri, ci].transAxes,
                         )
 
     fig.suptitle(
