@@ -120,7 +120,7 @@ def main():
     #ensure_dir(OUT_DIR / "lw")
     ensure_dir(OUT_DIR / "sino")
     ensure_dir(OUT_DIR / "pinv")
-    ensure_dir(OUT_DIR / "pinv_la")
+    ensure_dir(OUT_DIR / "pinv_full")
     ensure_dir(OUT_DIR / "tikh")
 
     # dataset
