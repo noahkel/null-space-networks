@@ -82,12 +82,12 @@ def _odl_to_4d(img) -> torch.Tensor:
     return torch.from_numpy(np.asarray(img).astype(np.float32)).unsqueeze(0).unsqueeze(0)
 
 def make_phantom_single(res):
-    dataset = EllipsesDataset(image_size=res)
+    dataset = EllipsesDataset(image_size=res, fixed_seeds=True)
     gen = single_ellipse_generator(dataset, 'train')
     return _odl_to_4d(next(gen))
 
 def make_phantom_multiple(res):
-    dataset = EllipsesDataset(image_size=res)
+    dataset = EllipsesDataset(image_size=res, fixed_seeds=True)
     return _odl_to_4d(next(dataset.generator('train')))
 # ---------------------------------------------------------------------------
 # Tests
@@ -292,7 +292,7 @@ def _find_and_load_model(model_dir, init_key, model_type, matrix_r):
     return _load_model(str(ckpt), model_type, matrix_r, matrix_r.device)
 
 
-def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname,
+def visualise_results(x, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles, fname,
                       model_dir=None, model_type="nsn", device="cuda"):
     """
     Grid: one row per init method, columns show the reconstruction, its error
@@ -338,6 +338,7 @@ def visualise_results(x, astra_r, matrix_r, n_la, res, n_angles, fname,
         #("Tikh\n(Matrik, LA)",  "tikh", matrix_r.backward_la_tikhonov(sino_a_la, 4e-3)),
         ("FBP\n(Matrix, LA)",   "fbp",  matrix_r.fbp_la(sino_m_la)),
         ("Pinv\n(Matrix, LA)",  "pinv", matrix_r.backward_la(sino_m_la)),
+        ("Pinv\n(Full Matrix, LA)",  "pinv_full", matrix_r.backward_la(sino_m_la)),
     ]
 
     # ── Load one model per unique init_key (cache to avoid re-loading) ────────
@@ -560,6 +561,12 @@ def main():
             device=device, dtype=dtype, estimate_norm=True,
             cache_dir=args.cache_dir,
         )
+        matrix_r_full = MatrixRadonAdapter(
+            resolution=res, angles=angles, det_count=det_count,
+            phi=phi, svd_threshold=1e-15,
+            device=device, dtype=dtype, estimate_norm=True,
+            cache_dir=args.cache_dir,
+        )
     except Exception as e:
         print("  ERROR constructing MatrixRadonAdapter: %s" % e)
         sys.exit(1)
@@ -574,17 +581,17 @@ def main():
     for i in ("no_noise","noise_1p"):
         print("\nRunning synthetic phantom test ...")
         n_fail += run_tests(xsyn, astra_r, matrix_r, svd_thresh)
-        visualise_results(xsyn, astra_r, matrix_r, n_la, res, n_angles,
+        visualise_results(xsyn, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
                           fname=f"radon_test_{i}.png", **vis_kwargs)
 
         print("\nRunning single-ellipse phantom test ...")
         n_fail += run_tests(xsin, astra_r, matrix_r, svd_thresh)
-        visualise_results(xsin, astra_r, matrix_r, n_la, res, n_angles,
+        visualise_results(xsin, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
                           fname=f"radon_test_single_{i}.png", **vis_kwargs)
 
         print("\nRunning multi-ellipse phantom test ...")
         n_fail += run_tests(xmul, astra_r, matrix_r, svd_thresh)
-        visualise_results(xmul, astra_r, matrix_r, n_la, res, n_angles,
+        visualise_results(xmul, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
                           fname=f"radon_test_multiple_{i}.png", **vis_kwargs)
         import matplotlib.pyplot as plt
 

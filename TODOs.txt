@@ -1,0 +1,20 @@
+1. Welcher Radon für Daten generierung? 
+LA mit threshold svd
+Ergebnis mit voller und abgeschnittener Matrix vergleichen
+Beide FBPS mit voller und abgeschnittener Matrix vergleichen
+
+2. Mittlerer Fehler über viele Beispiele
+Mehrere Beispiele
+und rechteckige Bilder
+
+
+
+3. momentan miminieren wir 2 norm,
+stattdessen vllt minimieren der totalenvariation um glattere bilder zu erhalten
+Landweber nahe an pseudoinversen
+Totalvariation wirklich mal probieren von Astra oder von CHatgpt
+glätten von Radon
+
+
+
+Nächster Schritt RESNET vergleichen
