@@ -152,6 +152,16 @@ def main():
             cache_dir="radon_cache",
             svd_threshold=SVD_THRESH
         )
+        radon_full = MatrixRadonAdapter(
+            resolution=IMG_SIZE,
+            angles=angles,
+            det_count=DET_COUNT,
+            dx=dx,
+            phi=phi,
+            device=DEVICE,
+            cache_dir="radon_cache",
+            svd_threshold=1e-15
+        )
     L = radon.norm_A2
     tau, sigma = 1/L, 1/L
     
@@ -178,13 +188,13 @@ def main():
         # massive noise amplification of the plain pseudoinverse while still
         # producing a range-consistent (zero null-space component) initialisation.
         sigma_sino = NOISE_sigma_REL * float(y.abs().max())
-        x_pinv_la = radon.backward_la(y_delta).squeeze()
-        x_pinv = radon.backward(y_delta).squeeze()
+        x_pinv = radon.backward_la(y_delta).squeeze()
+        x_pinv_full = radon_full.backward_la(y_delta).squeeze()
         x_tikh = radon.backward_la_tikhonov(y_delta, lambda_reg=sigma_sino ** 2).squeeze()
         np.save(OUT_DIR / "gt" / f"{i:05d}.npy", x_gt.detach().cpu().numpy())
         np.save(OUT_DIR / "fbp" / f"{i:05d}.npy", x_fbp.detach().cpu().numpy())
-        np.save(OUT_DIR / "pinv_la" / f"{i:05d}.npy", x_pinv_la.detach().cpu().numpy())
         np.save(OUT_DIR / "pinv" / f"{i:05d}.npy", x_pinv.detach().cpu().numpy())
+        np.save(OUT_DIR / "pinv_full" / f"{i:05d}.npy", x_pinv_full.detach().cpu().numpy())
         np.save(OUT_DIR / "sino" / f"{i:05d}.npy", y_delta.squeeze().detach().cpu().numpy())
         np.save(OUT_DIR / "tikh" / f"{i:05d}.npy", x_tikh.squeeze().detach().cpu().numpy())
 
