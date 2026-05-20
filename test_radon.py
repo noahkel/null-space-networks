@@ -498,7 +498,223 @@ def visualise_results(x, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles, 
     plt.savefig(fname, dpi=150, bbox_inches="tight")
     print(f"\nSaved → {fname}")
     plt.close(fig)
+def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles, fname,
+                      model_dir=None, model_type="nsn", device="cuda"):
+    """
+    Grid: one row per init method, columns show the reconstruction, its error
+    against ground truth, and the error decomposed into range- and null-space
+    components.
 
+    For each init method the corresponding trained model is looked up at
+        {model_dir}/init_{init_key}/checkpoints/{model_type}_best.pt
+    If the checkpoint exists, four additional columns are shown for that row;
+    if not, those columns are blank ("no checkpoint").  If *model_dir* is None
+    or no checkpoint is found for any row, the model columns are omitted
+    entirely.
+
+    Layout
+    ------
+    Col 0  : row label (init name)
+    Col 1  : ground truth
+    Col 2  : init reconstruction
+    Col 3  : total error  (recon − GT)
+    Col 4  : range error  A_la^+ A_la e
+    Col 5  : null error   e − A_la^+ A_la e
+    Col 6  : model output          ┐
+    Col 7  : model total error     │ present only when at least one
+    Col 8  : model range error     │ init has a checkpoint
+    Col 9  : model null error      ┘
+    """
+    sino_a_full = []
+    sino_a_la = []
+    sino_m_la = []
+    x_gt_np = []
+    samples = []
+    r_min = 1
+    r_max = -1
+    e_abs = 0
+    d_abs = 0
+    for x in x_is:
+        x_gt_np.append(to_np(x[0, 0]))
+        def add_noise(sino: torch.Tensor, level: float = 0.01) -> torch.Tensor:
+            sigma = level * sino.norm() / sino.numel() ** 0.5
+            return sino + torch.randn_like(sino) * sigma
+        # ── Sinograms ─────────────────────────────────────────────────────────────
+        sino_a_full.append(astra_r.forward(x))
+        if not "no_" in fname:
+            sino_a_full = add_noise(sino_a_full[-1], level=0.01)
+        sino_a_la.append(astra_r.proj_ran(sino_a_full[-1]))
+        sino_m_la.append(matrix_r.proj_ran(matrix_r.forward(x)))  # shared LA measurement
+        if not "no_" in fname:
+            sino_m_la = add_noise(sino_m_la[-1], level=0.01)
+
+        # ── Init methods: (display_name, init_key_for_checkpoint, recon_tensor) ──
+        init_tensors = [
+            ("FBP\n(Astra, LA)",  "fbp",  astra_r.fbp_la(sino_a_full[-1])),
+            #("Tikh\n(Matrik, LA)",  "tikh", matrix_r.backward_la_tikhonov(sino_a_la, 4e-3)),
+            ("FBP\n(Matrix, LA)",   "fbp",  matrix_r.fbp_la(sino_m_la[-1])),
+            ("Pinv\n(Matrix, LA)",  "pinv", matrix_r.backward_la(sino_m_la[-1])),
+            ("Pinv\n(Full Matrix, LA)",  "pinv_full", matrix_r_full.backward_la(sino_m_la[-1])),
+        ]
+
+        # ── Load one model per unique init_key (cache to avoid re-loading) ────────
+        model_cache: dict = {}
+        for _, init_key, _ in init_tensors:
+            if init_key not in model_cache:
+                model_cache[init_key] = _find_and_load_model(
+                    model_dir, init_key, model_type, matrix_r
+                )
+
+        # ── Error decomposition helper ────────────────────────────────────────────
+        def decomp(recon_t):
+            """Returns (recon_np, err_np, e_ran_np, e_nul_np) — all (H, W) float32."""
+            r64 = recon_t.to(dtype=matrix_r.dtype, device=matrix_r.device)
+            x64 = x.to(dtype=matrix_r.dtype, device=matrix_r.device)
+            e_t     = r64 - x64
+            e_nul_t = matrix_r.proj_null_la(e_t)
+            e_ran_t = e_t - e_nul_t
+
+            return (
+                to_np(recon_t[0, 0]),
+                to_np(e_t[0, 0]),
+                to_np(e_ran_t[0, 0]),
+                to_np(e_nul_t[0, 0]),
+            )
+
+        # ── Per-row data ──────────────────────────────────────────────────────────
+        rows = []
+        for name, init_key, recon_t in init_tensors:
+            init_data = decomp(recon_t)
+
+            row_model = model_cache[init_key]
+            model_data = None
+            if row_model is not None:
+                row_model.eval()
+                with torch.no_grad():
+                    out = row_model(recon_t.float().to(device), sino_m_la.float().to(device))
+                model_data = decomp(out.to(dtype=matrix_r.dtype))
+
+            rows.append((name, init_data, model_data))
+
+        samples.append(rows)
+        # ── Shared colour scales ───────────────────────────────────────────────────
+        def rmse(e): return float(np.sqrt(np.mean(e ** 2)))
+
+        all_imgs   = [x_gt_np] + [r[1][0] for r in rows]
+        all_errs   = [r[1][1] for r in rows]
+        all_decomp = [r[1][2] for r in rows] + [r[1][3] for r in rows]
+
+        # at least one row has model data → show model columns
+        has_model = any(r[2] is not None for r in rows)
+        if has_model:
+            all_imgs   += [r[2][0] for r in rows if r[2] is not None]
+            all_errs   += [r[2][1] for r in rows if r[2] is not None]
+            all_decomp += [r[2][2] for r in rows if r[2] is not None]
+            all_decomp += [r[2][3] for r in rows if r[2] is not None]
+
+        r_min  = min(min(a.min() for a in all_imgs), r_min)
+        r_max  = max(max(a.max() for a in all_imgs), r_max)
+        e_abs  = max(max(np.abs(a).max() for a in all_errs), e_abs)   if all_errs   else 1.0
+        d_abs  = max(max(np.abs(a).max() for a in all_decomp), d_abs) if all_decomp else 1.0
+    has_model = any(r[2] is not None for r in samples[-1])
+    # ── Figure ────────────────────────────────────────────────────────────────
+    n_rows = len(samples[-1])*len(samples)
+    n_cols = 10 if has_model else 6        # label + GT + 4 init + [4 model]
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(2.8 * n_cols, 3.2 * n_rows),
+        squeeze=False,
+    )
+
+    INIT_HDRS = [
+        "",
+        "Ground Truth",
+        "Init recon",
+        "Total error\n(recon − GT)",
+        "Range error\n$A_{la}^+A_{la}\\,e$\n(scanner-visible)",
+        "Null error\n$e - A_{la}^+A_{la}\\,e$\n(scanner-invisible)",
+    ]
+    MODEL_HDRS = [
+        f"Model output\n({model_type})",
+        "Model error",
+        "Model range\nerror",
+        "Model null\nerror",
+    ]
+    ALL_HDRS = INIT_HDRS + (MODEL_HDRS if has_model else [])
+    for i, rows in enumerate(samples):
+        for ri, (name, (recon_np, err_np, e_ran_np, e_nul_np), mdata) in enumerate(rows):
+            is_top = ri == 0
+
+            def title(col_i, metric="", _top=is_top):
+                hdr = ALL_HDRS[col_i]
+                if _top:
+                    return f"{hdr}\n{metric}" if metric else hdr
+                return metric
+
+            # Col 0: row label
+            axes[ri, 0].axis("off")
+            axes[ri, 0].text(0.5, 0.5, name, ha="center", va="center",
+                             fontsize=9, fontweight="bold",
+                             transform=axes[ri, 0].transAxes)
+
+            # Col 1: ground truth
+            _imshow(axes[ri, 1], x_gt_np[i], title(1), vmin=r_min, vmax=r_max)
+
+            # Col 2: init reconstruction
+            _imshow(axes[ri, 2], recon_np,
+                    title(2, f"RMSE Error={rmse(err_np):.3e}"),
+                    vmin=r_min, vmax=r_max)
+
+            # Col 3: total error
+            _imshow(axes[ri, 3], err_np,
+                    title(3, f"RMSE Error={rmse(err_np):.3e}"),
+                    cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
+
+            # Col 4: range error
+            _imshow(axes[ri, 4], e_ran_np,
+                    title(4, f"RMSE Error={rmse(e_ran_np):.3e}"),
+                    cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
+
+            # Col 5: null error
+            _imshow(axes[ri, 5], e_nul_np,
+                    title(5, f"RMSE Error={rmse(e_nul_np):.3e}"),
+                    cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
+
+            # Cols 6–9: model
+            if has_model:
+                if mdata is not None:
+                    m_img, m_err, m_ran, m_nul = mdata
+                    _imshow(axes[ri, 6], m_img,
+                            title(6, f"RMSE Error={rmse(m_err):.3e}"),
+                            vmin=r_min, vmax=r_max)
+                    _imshow(axes[ri, 7], m_err,
+                            title(7, f"RMSE Error={rmse(m_err):.3e}"),
+                            cmap="RdBu_r", vmin=-e_abs, vmax=e_abs)
+                    _imshow(axes[ri, 8], m_ran,
+                            title(8, f"RMSE Error={rmse(m_ran):.3e}"),
+                            cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
+                    _imshow(axes[ri, 9], m_nul,
+                            title(9, f"RMSE Error={rmse(m_nul):.3e}"),
+                            cmap="RdBu_r", vmin=-d_abs, vmax=d_abs)
+                else:
+                    for ci in range(6, 10):
+                        axes[ri, ci].axis("off")
+                        axes[ri, ci].text(
+                            0.5, 0.5, "no checkpoint", ha="center", va="center",
+                            fontsize=8, color="#888888",
+                            transform=axes[ri, ci].transAxes,
+                        )
+
+    fig.suptitle(
+        f"Init × decomposition  ({fname})  |  "
+        f"{res}×{res}  |  {n_angles} angles total, {n_la} LA",
+        fontsize=10, y=1.01,
+    )
+    plt.tight_layout()
+    plt.savefig(fname, dpi=150, bbox_inches="tight")
+    print(f"\nSaved → {fname}")
+    plt.close(fig)
 def _load_model(checkpoint_path, model_type, matrix_r, device):
     """Load a model checkpoint and return the model in eval mode."""
     from src.utils import build_models
@@ -575,8 +791,11 @@ def main():
 
     vis_kwargs = dict(model_dir=args.model_dir, model_type=args.model_type)
     xsyn = make_phantom(res, device, dtype)
-    xsin = make_phantom_single(res)
-    xmul = make_phantom_multiple(res)
+    xsin = []
+    xmul = []
+    for i in range(10):
+        xsin.append(make_phantom_single(res))
+        xmul.append(make_phantom_multiple(res))
 
     for i in ("no_noise","noise_1p"):
         print("\nRunning synthetic phantom test ...")
@@ -585,12 +804,14 @@ def main():
                           fname=f"radon_test_{i}.png", **vis_kwargs)
 
         print("\nRunning single-ellipse phantom test ...")
-        n_fail += run_tests(xsin, astra_r, matrix_r, svd_thresh)
+        for xs in xsin:
+            n_fail += run_tests(xs, astra_r, matrix_r, svd_thresh)
         visualise_results(xsin, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
                           fname=f"radon_test_single_{i}.png", **vis_kwargs)
 
         print("\nRunning multi-ellipse phantom test ...")
-        n_fail += run_tests(xmul, astra_r, matrix_r, svd_thresh)
+        for xm in xmul:
+            n_fail += run_tests(xm, astra_r, matrix_r, svd_thresh)
         visualise_results(xmul, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
                           fname=f"radon_test_multiple_{i}.png", **vis_kwargs)
         import matplotlib.pyplot as plt
