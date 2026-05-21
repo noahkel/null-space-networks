@@ -121,7 +121,6 @@ def main():
     ensure_dir(OUT_DIR / "sino")
     ensure_dir(OUT_DIR / "pinv")
     ensure_dir(OUT_DIR / "pinv_full")
-    ensure_dir(OUT_DIR / "tikh")
 
     # dataset
     dataset = EllipsesDataset(image_size=IMG_SIZE)
@@ -176,27 +175,24 @@ def main():
     for i in range(N_SAMPLES):
         x_gt = torch.from_numpy(next(gen).data).to(DEVICE)
 
-        y = radon.forward_la(to_4d(x_gt))
-        noise = radon.proj_ran(torch.randn_like(y))
-        y_delta = y + NOISE_sigma_REL * y.abs().max() * noise
+        y = radon_full.forward_la(to_4d(x_gt))
+        noise = radon_full.proj_ran(torch.randn_like(y))
+        add_noise = NOISE_sigma_REL * y.abs().max() * noise
+        y_delta = y + add_noise
 
-        y_diff_norms.append(float(torch.linalg.norm((y - y_delta).reshape(-1))))
+        y_diff_norms.append(float(torch.linalg.norm((add_noise).reshape(-1))))
 
-        x_fbp = radon.fbp_la(y_delta).squeeze()
-        # Tikhonov-regularised pseudoinverse: λ = σ_noise² in sinogram space.
-        # This gives the Wiener-optimal solution for Gaussian noise, avoiding the
-        # massive noise amplification of the plain pseudoinverse while still
-        # producing a range-consistent (zero null-space component) initialisation.
-        sigma_sino = NOISE_sigma_REL * float(y.abs().max())
+        x_fbp = radon_full.fbp_la(y_delta).squeeze()
+
         x_pinv = radon.backward_la(y_delta).squeeze()
         x_pinv_full = radon_full.backward_la(y_delta).squeeze()
-        x_tikh = radon.backward_la_tikhonov(y_delta, lambda_reg=sigma_sino ** 2).squeeze()
+
+
         np.save(OUT_DIR / "gt" / f"{i:05d}.npy", x_gt.detach().cpu().numpy())
         np.save(OUT_DIR / "fbp" / f"{i:05d}.npy", x_fbp.detach().cpu().numpy())
         np.save(OUT_DIR / "pinv" / f"{i:05d}.npy", x_pinv.detach().cpu().numpy())
         np.save(OUT_DIR / "pinv_full" / f"{i:05d}.npy", x_pinv_full.detach().cpu().numpy())
         np.save(OUT_DIR / "sino" / f"{i:05d}.npy", y_delta.squeeze().detach().cpu().numpy())
-        np.save(OUT_DIR / "tikh" / f"{i:05d}.npy", x_tikh.squeeze().detach().cpu().numpy())
 
         samples.append((x_gt, y_delta))
 
