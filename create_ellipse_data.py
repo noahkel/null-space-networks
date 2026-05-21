@@ -177,7 +177,7 @@ def main():
 
         y = radon_full.forward_la(to_4d(x_gt))
         noise = radon_full.proj_ran(torch.randn_like(y))
-        add_noise = NOISE_sigma_REL * y.abs().max() * noise
+        add_noise = NOISE_sigma_REL * y.abs().max() * noise * 0
         y_delta = y + add_noise
 
         y_diff_norms.append(float(torch.linalg.norm((add_noise).reshape(-1))))

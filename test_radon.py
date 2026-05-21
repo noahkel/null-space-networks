@@ -563,17 +563,22 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
         model_cache: dict = {}
         for _, init_key, _ in init_tensors:
             if init_key not in model_cache:
-                model_cache[init_key] = _find_and_load_model(
-                    model_dir, init_key, model_type, matrix_r
-                )
+                if "full" in init_key:
+                    model_cache[init_key] = _find_and_load_model(
+                        model_dir, init_key, model_type, matrix_r_full
+                    )
+                else:
+                    model_cache[init_key] = _find_and_load_model(
+                        model_dir, init_key, model_type, matrix_r
+                    )
 
         # ── Error decomposition helper ────────────────────────────────────────────
-        def decomp(recon_t):
+        def decomp(recon_t, radon):
             """Returns (recon_np, err_np, e_ran_np, e_nul_np) — all (H, W) float32."""
-            r64 = recon_t.to(dtype=matrix_r.dtype, device=matrix_r.device)
-            x64 = x.to(dtype=matrix_r.dtype, device=matrix_r.device)
+            r64 = recon_t.to(dtype=radon.dtype, device=radon.device)
+            x64 = x.to(dtype=radon.dtype, device=radon.device)
             e_t     = r64 - x64
-            e_nul_t = matrix_r.proj_null_la(e_t)
+            e_nul_t = radon.proj_null_la(e_t)
             e_ran_t = e_t - e_nul_t
 
             return (
@@ -586,7 +591,10 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
         # ── Per-row data ──────────────────────────────────────────────────────────
         rows = []
         for name, init_key, recon_t in init_tensors:
-            init_data = decomp(recon_t)
+            if "full" in init_key:
+                init_data = decomp(recon_t, matrix_r_full)
+            else:
+                init_data = decomp(recon_t, matrix_r)
 
             row_model = model_cache[init_key]
             model_data = None
