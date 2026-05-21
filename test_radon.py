@@ -602,7 +602,10 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
                 row_model.eval()
                 with torch.no_grad():
                     out = row_model(recon_t.float().to(device), sino_m_la[-1].float().to(device))
-                model_data = decomp(out.to(dtype=matrix_r.dtype))
+                if "full" in init_key:
+                    model_data = decomp(out.to(dtype=matrix_r.dtype), matrix_r_full)
+                else:
+                    model_data = decomp(out.to(dtype=matrix_r.dtype), matrix_r)
 
             rows.append((name, init_data, model_data))
 
