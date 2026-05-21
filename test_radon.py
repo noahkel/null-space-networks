@@ -335,10 +335,10 @@ def visualise_results(x, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles, 
     # ── Init methods: (display_name, init_key_for_checkpoint, recon_tensor) ──
     init_tensors = [
         ("FBP\n(Astra, LA)",  "fbp",  astra_r.fbp_la(sino_a_full)),
-        #("Tikh\n(Matrik, LA)",  "tikh", matrix_r.backward_la_tikhonov(sino_a_la, 4e-3)),
         ("FBP\n(Matrix, LA)",   "fbp",  matrix_r.fbp_la(sino_m_la)),
         ("Pinv\n(Matrix, LA)",  "pinv", matrix_r.backward_la(sino_m_la)),
         ("Pinv\n(Full Matrix, LA)",  "pinv_full", matrix_r.backward_la(sino_m_la)),
+        # ("Tikh\n(Matrik, LA)",  "tikh", matrix_r.backward_la_tikhonov(sino_a_la, 4e-3)),
     ]
 
     # ── Load one model per unique init_key (cache to avoid re-loading) ────────
@@ -657,8 +657,7 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
             # Col 0: row label
             axes[i * len(rows) + ri, 0].axis("off")
             axes[i * len(rows) + ri, 0].text(0.5, 0.5, name, ha="center", va="center",
-                             fontsize=9, fontweight="bold",
-                             transform=axes[ri, 0].transAxes)
+                             fontsize=9, fontweight="bold")
 
             # Col 1: ground truth
             _imshow(axes[i * len(rows) + ri, 1], x_gt_np[i], title(1), vmin=r_min, vmax=r_max)

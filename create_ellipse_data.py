@@ -46,7 +46,7 @@ def single_ellipse_generator(dataset, part='train'):
     from itertools import repeat
     it = repeat(None, n) if n is not None else repeat(None)
     for _ in it:
-        min_area = 0.5
+        min_area = 0.1
 
         while True:
             a1 = 0.2 * r.exponential(1.0)
