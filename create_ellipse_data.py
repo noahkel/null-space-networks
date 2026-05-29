@@ -286,7 +286,7 @@ def main():
         "svd_threshold": SVD_THRESH
     }
 
-    with open(OUT_DIR / "summary.json", "w") as f:
+    with open(OUT_DIR / f"summary{NOISE_sigma_REL}.json", "w") as f:
         json.dump(summary, f, indent=2)
 
     print("Done. Data saved to:", OUT_DIR.resolve())
