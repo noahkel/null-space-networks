@@ -114,13 +114,13 @@ def main():
     print("Generating on device " + str(DEVICE))
     # output structure
     ensure_dir(OUT_DIR)
-    ensure_dir(OUT_DIR / "gt")
-    ensure_dir(OUT_DIR / "fbp")
+    ensure_dir(OUT_DIR / f"gt{NOISE_sigma_REL}")
+    ensure_dir(OUT_DIR / f"fbp{NOISE_sigma_REL}")
     #ensure_dir(OUT_DIR / "tv")
     #ensure_dir(OUT_DIR / "lw")
-    ensure_dir(OUT_DIR / "sino")
-    ensure_dir(OUT_DIR / "pinv")
-    ensure_dir(OUT_DIR / "pinv_full")
+    ensure_dir(OUT_DIR / f"sino{NOISE_sigma_REL}")
+    ensure_dir(OUT_DIR / f"pinv{NOISE_sigma_REL}")
+    ensure_dir(OUT_DIR / f"pinv_full{NOISE_sigma_REL}")
 
     # dataset
     dataset = EllipsesDataset(image_size=IMG_SIZE)
@@ -188,16 +188,17 @@ def main():
         x_pinv_full = radon_full.backward_la(y_delta).squeeze()
 
 
-        np.save(OUT_DIR / "gt" / f"{i:05d}.npy", x_gt.detach().cpu().numpy())
-        np.save(OUT_DIR / "fbp" / f"{i:05d}.npy", x_fbp.detach().cpu().numpy())
-        np.save(OUT_DIR / "pinv" / f"{i:05d}.npy", x_pinv.detach().cpu().numpy())
-        np.save(OUT_DIR / "pinv_full" / f"{i:05d}.npy", x_pinv_full.detach().cpu().numpy())
-        np.save(OUT_DIR / "sino" / f"{i:05d}.npy", y_delta.squeeze().detach().cpu().numpy())
+        np.save(OUT_DIR / f"gt{NOISE_sigma_REL}" / f"{i:05d}.npy", x_gt.detach().cpu().numpy())
+        np.save(OUT_DIR / f"fbp{NOISE_sigma_REL}" / f"{i:05d}.npy", x_fbp.detach().cpu().numpy())
+        np.save(OUT_DIR / f"pinv{NOISE_sigma_REL}" / f"{i:05d}.npy", x_pinv.detach().cpu().numpy())
+        np.save(OUT_DIR / f"pinv_full{NOISE_sigma_REL}" / f"{i:05d}.npy", x_pinv_full.detach().cpu().numpy())
+        np.save(OUT_DIR / f"sino{NOISE_sigma_REL}" / f"{i:05d}.npy", y_delta.squeeze().detach().cpu().numpy())
 
         samples.append((x_gt, y_delta))
 
     y_diff_norms = np.array(y_diff_norms)
-    np.save(OUT_DIR / "y_diff_norms.npy", y_diff_norms)
+
+    np.save(OUT_DIR / f"y_diff_norms{NOISE_sigma_REL}.npy", y_diff_norms)
 
     subset = samples[:TV_SUBSET]
 
