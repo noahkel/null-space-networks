@@ -253,7 +253,7 @@ if __name__ == "__main__":
     init_methods = parse_list_arg(args.init)
     noise_levels = parse_list_arg(args.noise_levels)
     type = args.type
-    main(example=type, out_dir=out_dir, data_dir=data_dir, models=model_names, init_methods=init_methods)
+    main(example=type, out_dir=out_dir, data_dir=data_dir, models=model_names, init_methods=init_methods, noise_levels=noise_levels)
     print("Finished.")
 
 # sbatch -p a6000 -w mp-gpu4-a6000-2 --job-name=train -o logs/train.txt --time=30-00:00:00 --wrap="python -u main.py"
