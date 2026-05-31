@@ -937,11 +937,13 @@ def main() -> None:
             with torch.no_grad():
                 clean_rows_cache: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
                 sample_count = 0
-                for x_gt, _, y_delta in loader:
+                for x_gt, x_init, y_delta in loader:
                     x_gt = to_4d(x_gt).to(device)
+                    x_init = to_4d(x_init).to(device)
                     y_delta = to_4d(y_delta).to(device)
-                    clean_pred, clean_init, y_clean = adapter.forward(y_delta, mode="exact")
-                    clean_rows_cache.append((x_gt, clean_init, y_clean, clean_pred))
+                    y_clean = adapter.projector(y_delta)
+                    clean_pred = adapter.model(x_init, y_clean)
+                    clean_rows_cache.append((x_gt, x_init, y_clean, clean_pred))
                     sample_count += x_gt.shape[0]
                     if sample_count >= args.max_samples:
                         break

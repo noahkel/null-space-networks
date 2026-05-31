@@ -251,6 +251,11 @@ def parse_args():
     p.add_argument("--model-type", type=str,   default="nsn",
                    choices=["nsn", "resnet", "dpnsn", "dpnsn_res"],
                    help="Model architecture to load (default: nsn)")
+    p.add_argument("--data-root", type=str, default=None,
+                   help="Root directory of pre-generated dataset (contains gt0.0/, fbp0.0/, etc.)."
+                        " If omitted, falls back to generating synthetic phantoms.")
+    p.add_argument("--n-vis", type=int, default=10,
+                   help="Number of dataset samples to load for visualisation (default: 10)")
     return p.parse_args()
 
 def run_tests(x, astra_r, matrix_r, svd_thresh):
@@ -292,19 +297,19 @@ def _find_and_load_model(model_dir, init_key, model_type, matrix_r, noise):
     return _load_model(str(ckpt), model_type, matrix_r, matrix_r.device)
 
 
-def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles, fname,
+def visualise_results(dataset_samples, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles, fname,
                       model_dir=None, model_type="nsn", device="cuda", noise="0.0"):
     """
     Grid: one row per init method, columns show the reconstruction, its error
     against ground truth, and the error decomposed into range- and null-space
     components.
 
-    For each init method the corresponding trained model is looked up at
-        {model_dir}/init_{init_key}/checkpoints/{model_type}_best.pt
-    If the checkpoint exists, four additional columns are shown for that row;
-    if not, those columns are blank ("no checkpoint").  If *model_dir* is None
-    or no checkpoint is found for any row, the model columns are omitted
-    entirely.
+    dataset_samples : list of dicts produced by load_dataset_samples(), each with:
+        "gt"        – ground-truth image tensor  (1,1,H,W)
+        "y_delta"   – noisy limited-angle sinogram (1,1,n_angles,det)
+        "fbp"       – FBP init tensor             (optional)
+        "pinv"      – pseudoinverse init tensor    (optional)
+        "pinv_full" – full pseudoinverse init      (optional)
 
     Layout
     ------
@@ -319,10 +324,12 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
     Col 8  : model range error     │ init has a checkpoint
     Col 9  : model null error      ┘
     """
-    if isinstance(x_is, torch.Tensor):
-        x_is = [x_is]
-    sino_a_full = []
-    sino_a_la = []
+    INIT_LABELS = {
+        "fbp":       "FBP\n(Saved)",
+        "pinv":      "Pinv\n(Saved)",
+        "pinv_full": "Pinv Full\n(Saved)",
+    }
+
     sino_m_la = []
     x_gt_np = []
     samples = []
@@ -330,27 +337,18 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
     r_max = -1
     e_abs = 0
     d_abs = 0
-    for x in x_is:
-        x_gt_np.append(to_np(x[0, 0]))
-        def add_noise(sino: torch.Tensor, level: float = 0.01) -> torch.Tensor:
-            sigma = level * sino.norm() / sino.numel() ** 0.5
-            return sino + torch.randn_like(sino) * sigma
-        # ── Sinograms ─────────────────────────────────────────────────────────────
-        sino_a_full.append(astra_r.forward(x))
-        if float(noise) > 0:
-            sino_a_full[-1] = add_noise(sino_a_full[-1], level=float(noise) / 100)
-        sino_a_la.append(astra_r.proj_ran(sino_a_full[-1]))
-        sino_m_la.append(matrix_r.proj_ran(matrix_r.forward(x)))  # shared LA measurement
-        if float(noise) > 0:
-            sino_m_la[-1] = add_noise(sino_m_la[-1], level=float(noise) / 100)
 
-        # ── Init methods: (display_name, init_key_for_checkpoint, recon_tensor) ──
+    for s in dataset_samples:
+        x_gt_t = s["gt"].to(dtype=matrix_r.dtype, device=device)
+        y_delta_t = s["y_delta"].to(dtype=matrix_r.dtype, device=device)
+
+        x_gt_np.append(to_np(x_gt_t[0, 0]))
+        sino_m_la.append(y_delta_t)
+
+        # ── Init methods from pre-saved data ─────────────────────────────────────
         init_tensors = [
-            ("FBP\n(Astra, LA)",  "fbp",  astra_r.fbp_la(sino_a_full[-1])),
-            #("Tikh\n(Matrik, LA)",  "tikh", matrix_r.backward_la_tikhonov(sino_a_la, 4e-3)),
-            ("FBP\n(Matrix, LA)",   "fbp",  matrix_r.fbp_la(sino_m_la[-1])),
-            ("Pinv\n(Matrix, LA)",  "pinv", matrix_r.backward_la(sino_m_la[-1])),
-            ("Pinv\n(Full Matrix, LA)",  "pinv_full", matrix_r_full.backward_la(sino_m_la[-1])),
+            (INIT_LABELS[k], k, s[k].float().to(device))
+            for k in ("fbp", "pinv", "pinv_full") if k in s
         ]
 
         # ── Load one model per unique init_key (cache to avoid re-loading) ────────
@@ -370,11 +368,10 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
         def decomp(recon_t, radon):
             """Returns (recon_np, err_np, e_ran_np, e_nul_np) — all (H, W) float32."""
             r64 = recon_t.to(dtype=radon.dtype, device=radon.device)
-            x64 = x.to(dtype=radon.dtype, device=radon.device)
+            x64 = x_gt_t.to(dtype=radon.dtype, device=radon.device)
             e_t     = r64 - x64
             e_nul_t = radon.proj_null_la(e_t)
             e_ran_t = e_t - e_nul_t
-
             return (
                 to_np(recon_t[0, 0]),
                 to_np(e_t[0, 0]),
@@ -541,6 +538,65 @@ def _load_model(checkpoint_path, model_type, matrix_r, device):
     return model
 
 
+def load_dataset_samples(
+    data_root: str,
+    noise: str,
+    n: int = 10,
+    device=None,
+    dtype=torch.float32,
+    split: str = "test",
+    n_train: int = 4000,
+    n_test: int = 1000,
+):
+    """
+    Load pre-generated samples from create_ellipse_data.py output.
+
+    Returns a list of dicts, each with:
+        "gt"        – ground-truth image  (1,1,H,W)
+        "y_delta"   – noisy limited-angle sinogram (1,1,n_angles,det)
+        "fbp"       – FBP init            (if folder exists)
+        "pinv"      – pseudoinverse init  (if folder exists)
+        "pinv_full" – full pinv init      (if folder exists)
+    """
+    root = Path(data_root)
+    suffix = noise
+
+    gt_dir   = root / f"gt{suffix}"
+    sino_dir = root / f"sino{suffix}"
+    init_dirs = {
+        k: root / f"{k}{suffix}"
+        for k in ("fbp", "pinv", "pinv_full")
+        if (root / f"{k}{suffix}").exists()
+    }
+
+    all_files = sorted(f.name for f in gt_dir.glob("*.npy"))
+    if split == "test":
+        files = all_files[n_train : n_train + n_test]
+    else:
+        files = all_files[:n_train]
+    files = files[:n]
+
+    samples = []
+    for fname in files:
+        s: dict = {}
+        s["gt"] = torch.from_numpy(
+            np.load(gt_dir / fname)
+        ).unsqueeze(0).unsqueeze(0).to(dtype=dtype, device=device)
+        s["y_delta"] = torch.from_numpy(
+            np.load(sino_dir / fname)
+        ).unsqueeze(0).unsqueeze(0).to(dtype=dtype, device=device)
+        for k, d in init_dirs.items():
+            p = d / fname
+            if p.exists():
+                s[k] = torch.from_numpy(
+                    np.load(p)
+                ).unsqueeze(0).unsqueeze(0).to(dtype=dtype, device=device)
+        samples.append(s)
+
+    print(f"  Loaded {len(samples)} samples from {root} (noise={noise}, split={split})")
+    return samples
+
+
 def main():
     args = parse_args()
 
@@ -603,39 +659,44 @@ def main():
     n_fail = 0
 
     vis_kwargs = dict(model_dir=args.model_dir, model_type=args.model_type)
-    xsyn = make_phantom(res, device, dtype)
-    xsin = []
-    xmul = []
-    for i in range(10):
-        xsin.append(make_phantom_single(res))
-        xmul.append(make_phantom_multiple(res))
 
     for i in ("0.0","1.0", "2.0"):
-        print("\nRunning synthetic phantom test ...")
-        n_fail += run_tests(xsyn, astra_r, matrix_r, svd_thresh)
-        visualise_results(xsyn, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
-                          fname=f"radon_test_{i}.png", noise=i, **vis_kwargs)
-        visualise_results(xsyn, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
-                          fname=f"radon_test_{i}_resnet.png", noise=i,
-                          model_dir=args.model_dir, model_type="resnet")
+        # ── Load dataset samples (or fall back to synthetic phantoms) ─────────────
+        if args.data_root:
+            dsamples = load_dataset_samples(
+                args.data_root, noise=i, n=args.n_vis,
+                device=device, dtype=dtype,
+            )
+        else:
+            print("  --data-root not set; generating synthetic phantoms instead")
+            dsamples = [{"gt": make_phantom(res, device, dtype)}]
+            for _ in range(args.n_vis - 1):
+                dsamples.append({"gt": make_phantom_single(res)})
 
-        print("\nRunning single-ellipse phantom test ...")
-        for xs in xsin:
-            n_fail += run_tests(xs, astra_r, matrix_r, svd_thresh)
-        visualise_results(xsin, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
-                          fname=f"radon_test_single_{i}.png", noise=i, **vis_kwargs)
-        visualise_results(xsin, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
-                          fname=f"radon_test_single_{i}_resnet.png", noise=i,
-                          model_dir=args.model_dir, model_type="resnet")
+        # ── Math tests (use the first sample's GT — any image works) ─────────────
+        print("\nRunning Radon operator tests ...")
+        n_fail += run_tests(dsamples[0]["gt"].to(dtype=dtype, device=device),
+                            astra_r, matrix_r, svd_thresh)
 
-        print("\nRunning multi-ellipse phantom test ...")
-        for xm in xmul:
-            n_fail += run_tests(xm, astra_r, matrix_r, svd_thresh)
-        visualise_results(xmul, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
-                          fname=f"radon_test_multiple_{i}.png", noise=i, **vis_kwargs)
-        visualise_results(xmul, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
-                          fname=f"radon_test_multiple_{i}_resnet.png", noise=i,
-                          model_dir=args.model_dir, model_type="resnet")
+        # ── Visualisations ────────────────────────────────────────────────────────
+        if args.data_root:
+            print(f"\nVisualising single sample (noise={i}) ...")
+            visualise_results(dsamples[:1], astra_r, matrix_r, matrix_r_full,
+                               n_la, res, n_angles,
+                               fname=f"radon_test_{i}.png", noise=i, **vis_kwargs)
+            visualise_results(dsamples[:1], astra_r, matrix_r, matrix_r_full,
+                               n_la, res, n_angles,
+                               fname=f"radon_test_{i}_resnet.png", noise=i,
+                               model_dir=args.model_dir, model_type="resnet")
+
+            print(f"\nVisualising all {len(dsamples)} samples (noise={i}) ...")
+            visualise_results(dsamples, astra_r, matrix_r, matrix_r_full,
+                               n_la, res, n_angles,
+                               fname=f"radon_test_dataset_{i}.png", noise=i, **vis_kwargs)
+            visualise_results(dsamples, astra_r, matrix_r, matrix_r_full,
+                               n_la, res, n_angles,
+                               fname=f"radon_test_dataset_{i}_resnet.png", noise=i,
+                               model_dir=args.model_dir, model_type="resnet")
         import matplotlib.pyplot as plt
 
         s = matrix_r._s_k_la.cpu().numpy()          # singular values of A_la, sorted descending
