@@ -459,9 +459,9 @@ def get_loader(example: str, init_method: str, batch_size: int, split: str, n_tr
     raise NotImplementedError("Lodopab not implemented")
 
 
-def load_summary(example: str, data_root: Optional[str] = None) -> Dict:
+def load_summary(example: str, noise: str, data_root: Optional[str] = None) -> Dict:
     root = data_root or f"{example}_out"
-    summary_path = Path(root) / "summary.json"
+    summary_path = Path(root) / f"summary{noise}.json"
     with open(summary_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -881,28 +881,28 @@ def main() -> None:
 
     example = args.type
     init_method = args.init.lower()
-    summary = load_summary(example, data_root=args.data_root)
-    beta = float(summary["mean_norm_y_minus_y_delta"])
-    radon = build_radon(summary, device=device)
-    eps = args.eps * beta
-    loader = get_loader(
-        example=example,
-        init_method=init_method,
-        batch_size=args.batch_size,
-        split=args.split,
-        n_train=args.n_train,
-        n_test=args.n_test,
-        num_workers=args.num_workers,
-        data_root=args.data_root,
-    )
 
-    init_reconstructor = InitReconstructor(example=example, init_method=init_method, summary=summary, radon=radon)
-    projector = lambda y: radon.proj_ran(y)
-
-    attack_names = parse_list_arg(args.attacks)
-    model_names = parse_list_arg(args.models)
-    print(model_names)
     for i in ("0.0", "1.0", "2.0"):
+        summary = load_summary(example, i, data_root=args.data_root)
+        beta = float(summary["mean_norm_y_minus_y_delta"])
+        radon = build_radon(summary, device=device)
+        eps = args.eps * beta
+        loader = get_loader(
+            example=example,
+            init_method=init_method,
+            batch_size=args.batch_size,
+            split=args.split,
+            n_train=args.n_train,
+            n_test=args.n_test,
+            num_workers=args.num_workers,
+            data_root=args.data_root,
+        )
+
+        init_reconstructor = InitReconstructor(example=example, init_method=init_method, summary=summary, radon=radon)
+        projector = lambda y: radon.proj_ran(y)
+
+        attack_names = parse_list_arg(args.attacks)
+        model_names = parse_list_arg(args.models)
         out_root = Path(args.out_dir) if args.out_dir else Path(f"attack_runs_{example}{i}") / f"init_{init_method}{i}"
         out_root.mkdir(parents=True, exist_ok=True)
 
