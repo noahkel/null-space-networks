@@ -923,6 +923,7 @@ def main() -> None:
                 beta=beta,
                 device=device,
                 model_dir=args.model_dir,
+                noise=i
             )
             adapter = ModelAttackAdapter(
                 model=model,
