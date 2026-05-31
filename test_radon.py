@@ -405,25 +405,32 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
 
         samples.append(rows)
         # ── Shared colour scales ───────────────────────────────────────────────────
-        def rmse(e): return float(np.sqrt(np.mean(e ** 2)))
+        def rmse(e): return float(np.sqrt(np.mean(e[np.isfinite(e)] ** 2))) if np.any(np.isfinite(e)) else float('nan')
 
-        all_imgs   = [x_gt_np[-1]] + [r[1][0] for r in rows]
+        def _robust_absmax(arrays, pct=99):
+            vals = np.concatenate([a.ravel() for a in arrays])
+            vals = vals[np.isfinite(vals)]
+            return float(np.percentile(np.abs(vals), pct)) if len(vals) > 0 else 1.0
+
+        # anchor image scale to ground truth; clamp reconstructions to that range for display
+        r_min  = min(float(x_gt_np[-1].min()), r_min)
+        r_max  = max(float(x_gt_np[-1].max()), r_max)
+
         all_errs   = [r[1][1] for r in rows]
         all_decomp = [r[1][2] for r in rows] + [r[1][3] for r in rows]
 
-        # at least one row has model data → show model columns
         has_model = any(r[2] is not None for r in rows)
         if has_model:
-            all_imgs   += [r[2][0] for r in rows if r[2] is not None]
             all_errs   += [r[2][1] for r in rows if r[2] is not None]
             all_decomp += [r[2][2] for r in rows if r[2] is not None]
             all_decomp += [r[2][3] for r in rows if r[2] is not None]
 
-        r_min  = min(min(a.min() for a in all_imgs), r_min)
-        r_max  = max(max(a.max() for a in all_imgs), r_max)
-        e_abs  = max(max(np.abs(a).max() for a in all_errs), e_abs)   if all_errs   else 1.0
-        d_abs  = max(max(np.abs(a).max() for a in all_decomp), d_abs) if all_decomp else 1.0
+        e_abs  = max(_robust_absmax(all_errs),   e_abs) if all_errs   else 1.0
+        d_abs  = max(_robust_absmax(all_decomp), d_abs) if all_decomp else 1.0
     has_model = any(r[2] is not None for r in samples[-1])
+    gt_range = max(r_max - r_min, 1e-6)
+    e_abs = min(e_abs, gt_range)
+    d_abs = min(d_abs, gt_range)
     # ── Figure ────────────────────────────────────────────────────────────────
     n_rows = len(samples[-1])*len(samples)
     n_cols = 10 if has_model else 6        # label + GT + 4 init + [4 model]
