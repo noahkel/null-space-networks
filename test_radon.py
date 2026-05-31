@@ -615,18 +615,27 @@ def main():
         n_fail += run_tests(xsyn, astra_r, matrix_r, svd_thresh)
         visualise_results(xsyn, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
                           fname=f"radon_test_{i}.png", noise=i, **vis_kwargs)
+        visualise_results(xsyn, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
+                          fname=f"radon_test_{i}_resnet.png", noise=i,
+                          model_dir=args.model_dir, model_type="resnet")
 
         print("\nRunning single-ellipse phantom test ...")
         for xs in xsin:
             n_fail += run_tests(xs, astra_r, matrix_r, svd_thresh)
         visualise_results(xsin, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
                           fname=f"radon_test_single_{i}.png", noise=i, **vis_kwargs)
+        visualise_results(xsin, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
+                          fname=f"radon_test_single_{i}_resnet.png", noise=i,
+                          model_dir=args.model_dir, model_type="resnet")
 
         print("\nRunning multi-ellipse phantom test ...")
         for xm in xmul:
             n_fail += run_tests(xm, astra_r, matrix_r, svd_thresh)
         visualise_results(xmul, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
                           fname=f"radon_test_multiple_{i}.png", noise=i, **vis_kwargs)
+        visualise_results(xmul, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
+                          fname=f"radon_test_multiple_{i}_resnet.png", noise=i,
+                          model_dir=args.model_dir, model_type="resnet")
         import matplotlib.pyplot as plt
 
         s = matrix_r._s_k_la.cpu().numpy()          # singular values of A_la, sorted descending
