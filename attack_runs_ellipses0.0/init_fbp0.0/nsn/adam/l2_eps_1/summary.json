@@ -1,0 +1,11 @@
+{
+  "num_examples": 0,
+  "attack_runtime_total_sec": 0.0,
+  "attack_runtime_per_example_sec": 0.0,
+  "model_name": "nsn",
+  "attack_name": "adam",
+  "norm": "l2",
+  "eps": 1.0,
+  "attack_init_mode": "exact",
+  "eval_init_mode": "exact"
+}

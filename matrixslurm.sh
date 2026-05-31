@@ -63,12 +63,12 @@ echo "Finished Training at: $(date)"
 
 # ── Adversarial Attacks ───────────────────────────────────────────────────────
 
-#python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR --model-dir $MODEL_DIR --models resnet,nsn --init pinv --attacks adam --norm l2
-#python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR --model-dir $MODEL_DIR --models resnet,nsn --init fbp --attacks adam --norm l2
+python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR --model-dir $MODEL_DIR --models resnet,nsn --init pinv --attacks adam --norm l2
+python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR --model-dir $MODEL_DIR --models resnet,nsn --init fbp --attacks adam --norm l2
 
 echo "Finished Adversarial Attack at: $(date)"
 
-python -u test_radon.py
+#python -u test_radon.py
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 
