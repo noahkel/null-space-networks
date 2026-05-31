@@ -502,17 +502,17 @@ def load_model_checkpoint(
     radon,
     beta: float,
     device: torch.device,
+    noise: str,
     model_dir: Optional[str] = None,
 ) -> nn.Module:
     base = Path(model_dir) if model_dir else None
     candidates = [
         *(
-            [base / f"init_{init_method}" / "checkpoints" / f"{model_name}_best.pt"]
+            [base / f"init_{init_method}{noise}" / f"checkpoints{noise}" / f"{model_name}_best.pt"]
             if base else []
         ),
-        Path(f"runs_{example}") / f"init_{init_method}" / "checkpoints" / f"{model_name}_best.pt",
-        Path("checkpoints") / f"{model_name}_best.pt",
-        Path("models") / f"{model_name}_best.pt",
+        Path(f"runs_{example}") / f"init_{init_method}{noise}" / "checkpoints{noise}" / f"{model_name}_best.pt",
+        Path(f"checkpoints{noise}") / f"{model_name}_best.pt",
     ]
     print(f"Model path and checkpoint path: {candidates} and  {model_dir}")
     ckpt_path = next((p for p in candidates if p.exists()), None)
@@ -902,156 +902,157 @@ def main() -> None:
     attack_names = parse_list_arg(args.attacks)
     model_names = parse_list_arg(args.models)
     print(model_names)
-    out_root = Path(args.out_dir) if args.out_dir else Path(f"attack_runs_{example}") / f"init_{init_method}"
-    out_root.mkdir(parents=True, exist_ok=True)
+    for i in ("0.0", "1.0", "2.0"):
+        out_root = Path(args.out_dir) if args.out_dir else Path(f"attack_runs_{example}{i}") / f"init_{init_method}{i}"
+        out_root.mkdir(parents=True, exist_ok=True)
 
-    config = vars(args).copy()
-    config["device"] = str(device)
-    config["summary_path"] = str(Path(f"{example}_out") / "summary.json")
-    with open(out_root / "config.json", "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-    scatter_rows: Dict[str, Dict[str, List[Dict]]] = defaultdict(dict)
+        config = vars(args).copy()
+        config["device"] = str(device)
+        config["summary_path"] = str(Path(f"{example}{i}_out") / f"summary{i}.json")
+        with open(out_root / "config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+        scatter_rows: Dict[str, Dict[str, List[Dict]]] = defaultdict(dict)
 
-    for model_name in model_names:
-        print("loading " + model_name)
-        model = load_model_checkpoint(
-            example=example,
-            init_method=init_method,
-            model_name=model_name,
-            radon=radon,
-            beta=beta,
-            device=device,
-            model_dir=args.model_dir,
-        )
-        adapter = ModelAttackAdapter(
-            model=model,
-            init_reconstructor=init_reconstructor,
-            projector=projector,
-            attack_init_mode=args.attack_init_mode,
-        )
-        print("started caching of clean model outputs")
-        with torch.no_grad():
-            clean_rows_cache: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
-            sample_count = 0
-            for x_gt, _, y_delta in loader:
-                x_gt = to_4d(x_gt).to(device)
-                y_delta = to_4d(y_delta).to(device)
-                clean_pred, clean_init, y_clean = adapter.forward(y_delta, mode="exact")
-                clean_rows_cache.append((x_gt, clean_init, y_clean, clean_pred))
-                sample_count += x_gt.shape[0]
-                if sample_count >= args.max_samples:
-                    break
-        print(attack_names)
-        for attack_name in attack_names:
-            result_dir = out_root / model_name / attack_name / f"{args.norm}_eps_{args.eps:g}"
-            result_dir.mkdir(parents=True, exist_ok=True)
-
-            rows: List[Dict[str, float]] = []
-            example_rows: List[Dict] = []
-            total_runtime = 0.0
-            processed = 0
-
-            for x_gt, clean_init, y_clean, clean_pred in clean_rows_cache:
-                print(f"Processed {processed} samples")
-                if processed >= args.max_samples:
-                    break
-
-                attack_result = run_attack(
-                    attack_name=attack_name,
-                    adapter=adapter,
-                    x_gt=x_gt,
-                    y_clean=y_clean,
-                    clean_pred=clean_pred,
-                    args=args,
-                    eps=eps,
-                )
-                total_runtime += attack_result.runtime_sec
-
-                with torch.no_grad():
-                    adv_pred, adv_init, y_adv = adapter.forward(attack_result.y_adv, mode=args.eval_init_mode)
-
-                batch_rows = evaluate_batch(
-                    x_gt=x_gt,
-                    clean_init=clean_init,
-                    clean_y=y_clean,
-                    clean_pred=clean_pred,
-                    adv_init=adv_init,
-                    adv_y=y_adv,
-                    adv_pred=adv_pred,
-                    delta=attack_result.delta,
-                    success_rel_l2_factor=args.success_rel_l2_factor,
-                    success_mse_factor=args.success_mse_factor,
-                    radon = radon,
-
-                )
-                rows.extend(batch_rows)
-
-                remaining_slots = args.save_examples - len(example_rows)
-                if remaining_slots > 0:
-                    for i in range(min(x_gt.shape[0], remaining_slots)):
-                        e_ran_clean, e_nul_clean = decompose_error(
-                            clean_pred[i: i + 1] - x_gt[i: i + 1], radon
-                        )
-                        e_ran_adv, e_nul_adv = decompose_error(
-                            adv_pred[i: i + 1] - x_gt[i: i + 1], radon
-                        )
-                        fbp_delta = radon.fbp_la(attack_result.delta[i: i + 1])
-                        e_ran_fbp_d, _ = decompose_error(fbp_delta, radon)
-                        example_rows.append(
-                            {
-                                "x_gt": to_numpy_img(x_gt[i]),
-                                "clean_init": to_numpy_img(clean_init[i]),
-                                "adv_init": to_numpy_img(adv_init[i]),
-                                "clean_pred": to_numpy_img(clean_pred[i]),
-                                "adv_pred": to_numpy_img(adv_pred[i]),
-                                "clean_y": to_numpy_img(y_clean[i]),
-                                "adv_y": to_numpy_img(y_adv[i]),
-                                "delta": to_numpy_img(attack_result.delta[i]),
-                                "e_ran_clean": e_ran_clean.squeeze().numpy(),
-                                "e_nul_clean": e_nul_clean.squeeze().numpy(),
-                                "e_ran_adv": e_ran_adv.squeeze().numpy(),
-                                "e_nul_adv": e_nul_adv.squeeze().numpy(),
-                                "proj_ran_fbp_delta": e_ran_fbp_d.squeeze().numpy(),
-
-                            }
-                        )
-
-                processed += x_gt.shape[0]
-                if processed >= args.max_samples:
-                    break
-
-            summary_metrics = summarize_metrics(rows)
-            summary_metrics["attack_runtime_total_sec"] = total_runtime
-            summary_metrics["attack_runtime_per_example_sec"] = total_runtime / max(len(rows), 1)
-            summary_metrics["model_name"] = model_name
-            summary_metrics["attack_name"] = attack_name
-            summary_metrics["norm"] = args.norm
-            summary_metrics["eps"] = args.eps
-            summary_metrics["attack_init_mode"] = args.attack_init_mode
-            summary_metrics["eval_init_mode"] = args.eval_init_mode
-
-            with open(result_dir / "summary.json", "w", encoding="utf-8") as f:
-                json.dump(summary_metrics, f, indent=2)
-
-            if rows:
-                fieldnames = list(rows[0].keys())
-                with open(result_dir / "per_sample_metrics.csv", "w", encoding="utf-8", newline="") as f:
-                    writer = csv.DictWriter(f, fieldnames=fieldnames)
-                    writer.writeheader()
-                    writer.writerows(rows)
-            save_examples(result_dir, example_rows)
-            scatter_rows[attack_name][model_name] = rows
-
-            print(
-                f"[model={model_name} attack={attack_name}] "
-                f"n={len(rows)} adv_rel_l2={summary_metrics.get('adv_rel_l2_mean', float('nan')):.4f} "
-                f"success_rel_l2={summary_metrics.get('success_rel_l2_mean', float('nan')):.3f}"
-                f"clean_rel_l2={summary_metrics.get('clean_rel_l2_mean', float('nan')):.3f}"
+        for model_name in model_names:
+            print("loading " + model_name)
+            model = load_model_checkpoint(
+                example=example,
+                init_method=init_method,
+                model_name=model_name,
+                radon=radon,
+                beta=beta,
+                device=device,
+                model_dir=args.model_dir,
             )
-            for attack_name, rows_by_model in scatter_rows.items():
-                scatter_dir = out_root / attack_name
-                scatter_dir.mkdir(parents=True, exist_ok=True)
-                save_scatter_plot(scatter_dir, rows_by_model)
+            adapter = ModelAttackAdapter(
+                model=model,
+                init_reconstructor=init_reconstructor,
+                projector=projector,
+                attack_init_mode=args.attack_init_mode,
+            )
+            print("started caching of clean model outputs")
+            with torch.no_grad():
+                clean_rows_cache: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+                sample_count = 0
+                for x_gt, _, y_delta in loader:
+                    x_gt = to_4d(x_gt).to(device)
+                    y_delta = to_4d(y_delta).to(device)
+                    clean_pred, clean_init, y_clean = adapter.forward(y_delta, mode="exact")
+                    clean_rows_cache.append((x_gt, clean_init, y_clean, clean_pred))
+                    sample_count += x_gt.shape[0]
+                    if sample_count >= args.max_samples:
+                        break
+            print(attack_names)
+            for attack_name in attack_names:
+                result_dir = out_root / model_name / attack_name / f"{args.norm}_eps_{args.eps:g}"
+                result_dir.mkdir(parents=True, exist_ok=True)
+
+                rows: List[Dict[str, float]] = []
+                example_rows: List[Dict] = []
+                total_runtime = 0.0
+                processed = 0
+
+                for x_gt, clean_init, y_clean, clean_pred in clean_rows_cache:
+                    print(f"Processed {processed} samples")
+                    if processed >= args.max_samples:
+                        break
+
+                    attack_result = run_attack(
+                        attack_name=attack_name,
+                        adapter=adapter,
+                        x_gt=x_gt,
+                        y_clean=y_clean,
+                        clean_pred=clean_pred,
+                        args=args,
+                        eps=eps,
+                    )
+                    total_runtime += attack_result.runtime_sec
+
+                    with torch.no_grad():
+                        adv_pred, adv_init, y_adv = adapter.forward(attack_result.y_adv, mode=args.eval_init_mode)
+
+                    batch_rows = evaluate_batch(
+                        x_gt=x_gt,
+                        clean_init=clean_init,
+                        clean_y=y_clean,
+                        clean_pred=clean_pred,
+                        adv_init=adv_init,
+                        adv_y=y_adv,
+                        adv_pred=adv_pred,
+                        delta=attack_result.delta,
+                        success_rel_l2_factor=args.success_rel_l2_factor,
+                        success_mse_factor=args.success_mse_factor,
+                        radon = radon,
+
+                    )
+                    rows.extend(batch_rows)
+
+                    remaining_slots = args.save_examples - len(example_rows)
+                    if remaining_slots > 0:
+                        for i in range(min(x_gt.shape[0], remaining_slots)):
+                            e_ran_clean, e_nul_clean = decompose_error(
+                                clean_pred[i: i + 1] - x_gt[i: i + 1], radon
+                            )
+                            e_ran_adv, e_nul_adv = decompose_error(
+                                adv_pred[i: i + 1] - x_gt[i: i + 1], radon
+                            )
+                            fbp_delta = radon.fbp_la(attack_result.delta[i: i + 1])
+                            e_ran_fbp_d, _ = decompose_error(fbp_delta, radon)
+                            example_rows.append(
+                                {
+                                    "x_gt": to_numpy_img(x_gt[i]),
+                                    "clean_init": to_numpy_img(clean_init[i]),
+                                    "adv_init": to_numpy_img(adv_init[i]),
+                                    "clean_pred": to_numpy_img(clean_pred[i]),
+                                    "adv_pred": to_numpy_img(adv_pred[i]),
+                                    "clean_y": to_numpy_img(y_clean[i]),
+                                    "adv_y": to_numpy_img(y_adv[i]),
+                                    "delta": to_numpy_img(attack_result.delta[i]),
+                                    "e_ran_clean": e_ran_clean.squeeze().numpy(),
+                                    "e_nul_clean": e_nul_clean.squeeze().numpy(),
+                                    "e_ran_adv": e_ran_adv.squeeze().numpy(),
+                                    "e_nul_adv": e_nul_adv.squeeze().numpy(),
+                                    "proj_ran_fbp_delta": e_ran_fbp_d.squeeze().numpy(),
+
+                                }
+                            )
+
+                    processed += x_gt.shape[0]
+                    if processed >= args.max_samples:
+                        break
+
+                summary_metrics = summarize_metrics(rows)
+                summary_metrics["attack_runtime_total_sec"] = total_runtime
+                summary_metrics["attack_runtime_per_example_sec"] = total_runtime / max(len(rows), 1)
+                summary_metrics["model_name"] = model_name
+                summary_metrics["attack_name"] = attack_name
+                summary_metrics["norm"] = args.norm
+                summary_metrics["eps"] = args.eps
+                summary_metrics["attack_init_mode"] = args.attack_init_mode
+                summary_metrics["eval_init_mode"] = args.eval_init_mode
+
+                with open(result_dir / "summary.json", "w", encoding="utf-8") as f:
+                    json.dump(summary_metrics, f, indent=2)
+
+                if rows:
+                    fieldnames = list(rows[0].keys())
+                    with open(result_dir / "per_sample_metrics.csv", "w", encoding="utf-8", newline="") as f:
+                        writer = csv.DictWriter(f, fieldnames=fieldnames)
+                        writer.writeheader()
+                        writer.writerows(rows)
+                save_examples(result_dir, example_rows)
+                scatter_rows[attack_name][model_name] = rows
+
+                print(
+                    f"[model={model_name} attack={attack_name}] "
+                    f"n={len(rows)} adv_rel_l2={summary_metrics.get('adv_rel_l2_mean', float('nan')):.4f} "
+                    f"success_rel_l2={summary_metrics.get('success_rel_l2_mean', float('nan')):.3f}"
+                    f"clean_rel_l2={summary_metrics.get('clean_rel_l2_mean', float('nan')):.3f}"
+                )
+                for attack_name, rows_by_model in scatter_rows.items():
+                    scatter_dir = out_root / attack_name
+                    scatter_dir.mkdir(parents=True, exist_ok=True)
+                    save_scatter_plot(scatter_dir, rows_by_model)
 
 if __name__ == "__main__":
     main()
