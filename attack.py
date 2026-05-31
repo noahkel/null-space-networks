@@ -883,7 +883,7 @@ def main() -> None:
     example = args.type
     init_method = args.init.lower()
 
-    for i in ("0.0", "1.0", "2.0"):
+    for i in ("1.0", "2.0"):
         summary = load_summary(example, i, data_root=args.data_root)
         beta = float(summary["mean_norm_y_minus_y_delta"])
         radon = build_radon(summary, device=device)
