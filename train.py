@@ -133,9 +133,9 @@ def main(example, out_dir, data_dir, models, init_methods, noise_levels):
         print(f"BETA (mean y_diff_norms) = {BETA:.6e}")
 
         for init in INIT_METHODS:
-            run_dir = OUT_DIR / f"init_{init}{noise_levels}"
-            (run_dir / f"checkpoints{noise_levels}").mkdir(parents=True, exist_ok=True)
-            (run_dir / f"examples{noise_levels}").mkdir(parents=True, exist_ok=True)
+            run_dir = OUT_DIR / f"init_{init}{i}"
+            (run_dir / f"checkpoints{i}").mkdir(parents=True, exist_ok=True)
+            (run_dir / f"examples{i}").mkdir(parents=True, exist_ok=True)
 
             if example == 'ellipses':
                 train_loader = get_ellipse_dataloader(
@@ -148,6 +148,7 @@ def main(example, out_dir, data_dir, models, init_methods, noise_levels):
                     shuffle=True,
                     num_workers=NUM_WORKERS,
                     device=None,
+                    noise=i,
                 )
 
                 val_loader = get_ellipse_dataloader(
@@ -160,6 +161,7 @@ def main(example, out_dir, data_dir, models, init_methods, noise_levels):
                     shuffle=False,
                     num_workers=NUM_WORKERS,
                     device=None,
+                    noise=i
                 )
             else:
                 '''

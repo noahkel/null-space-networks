@@ -16,14 +16,15 @@ class EllipsesGTInitDataset(Dataset):
         self,
         root: Path,
         init: InitType = "tv",
+        noise: str="",
         device: Optional[torch.device] = None,
         dtype: torch.dtype = torch.float32,
         check_files: bool = True,
     ):
         self.root = Path(root)
-        self.gt_dir = self.root / "gt"
-        self.init_dir = self.root / init
-        self.sino_dir = self.root / "sino"
+        self.gt_dir = self.root / f"gt{noise}"
+        self.init_dir = self.root / f"{init}{noise}"
+        self.sino_dir = self.root / f"sino{noise}"
         
         self.files = sorted(f.name for f in self.gt_dir.glob("*.npy"))
 
@@ -92,6 +93,7 @@ def get_ellipse_dataloader(
     num_workers: int = 4,
     device: Optional[torch.device] = None,
     seed: int = 0,
+    noise: str="",
 ) -> DataLoader:
     init_recon = init_recon.lower()
     if init_recon not in ("tv", "fbp", "lw", "pinv", "tikh", "pinv_full"):
@@ -102,6 +104,7 @@ def get_ellipse_dataloader(
         root=Path(data_root),
         init=init_recon,
         device=device,
+        noise=noise,
     )
 
     # deterministic split
