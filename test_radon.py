@@ -278,14 +278,14 @@ def to_np(t: torch.Tensor) -> np.ndarray:
     return t.detach().cpu().float().numpy()
 
 
-def _find_and_load_model(model_dir, init_key, model_type, matrix_r):
+def _find_and_load_model(model_dir, init_key, model_type, matrix_r, noise):
     """
     Look for  {model_dir}/init_{init_key}/checkpoints/{model_type}_best.pt
     and load it.  Returns the model in eval mode, or None if not found.
     """
     if model_dir is None:
         return None
-    ckpt = Path(model_dir) / f"init_{init_key}" / "checkpoints" / f"{model_type}_best.pt"
+    ckpt = Path(model_dir) / f"init_{init_key}{noise}" / f"checkpoints{noise}" / f"{model_type}_best.pt"
     if not ckpt.exists():
         print(f"  [model] no checkpoint: {ckpt}")
         return None
@@ -499,7 +499,7 @@ def visualise_results(x, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles, 
     print(f"\nSaved → {fname}")
     plt.close(fig)
 def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles, fname,
-                      model_dir=None, model_type="nsn", device="cuda"):
+                      model_dir=None, model_type="nsn", device="cuda", noise="0.0"):
     """
     Grid: one row per init method, columns show the reconstruction, its error
     against ground truth, and the error decomposed into range- and null-space
@@ -565,11 +565,11 @@ def visualise_results(x_is, astra_r, matrix_r, matrix_r_full, n_la, res, n_angle
             if init_key not in model_cache:
                 if "full" in init_key:
                     model_cache[init_key] = _find_and_load_model(
-                        model_dir, init_key, model_type, matrix_r_full
+                        model_dir, init_key, model_type, matrix_r_full, noise
                     )
                 else:
                     model_cache[init_key] = _find_and_load_model(
-                        model_dir, init_key, model_type, matrix_r
+                        model_dir, init_key, model_type, matrix_r, noise
                     )
 
         # ── Error decomposition helper ────────────────────────────────────────────
@@ -809,23 +809,23 @@ def main():
         xsin.append(make_phantom_single(res))
         xmul.append(make_phantom_multiple(res))
 
-    for i in ("no_noise","noise_1p"):
+    for i in ("0.0","1.0", "2.0"):
         print("\nRunning synthetic phantom test ...")
         n_fail += run_tests(xsyn, astra_r, matrix_r, svd_thresh)
         visualise_results(xsyn, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
-                          fname=f"radon_test_{i}.png", **vis_kwargs)
+                          fname=f"radon_test_{i}.png", noise=i, **vis_kwargs)
 
         print("\nRunning single-ellipse phantom test ...")
         for xs in xsin:
             n_fail += run_tests(xs, astra_r, matrix_r, svd_thresh)
         visualise_results(xsin, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
-                          fname=f"radon_test_single_{i}.png", **vis_kwargs)
+                          fname=f"radon_test_single_{i}.png", noise=i, **vis_kwargs)
 
         print("\nRunning multi-ellipse phantom test ...")
         for xm in xmul:
             n_fail += run_tests(xm, astra_r, matrix_r, svd_thresh)
         visualise_results(xmul, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles,
-                          fname=f"radon_test_multiple_{i}.png", **vis_kwargs)
+                          fname=f"radon_test_multiple_{i}.png", noise=i, **vis_kwargs)
         import matplotlib.pyplot as plt
 
         s = matrix_r._s_k_la.cpu().numpy()          # singular values of A_la, sorted descending
