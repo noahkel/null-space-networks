@@ -431,7 +431,7 @@ def adam_attack(
     return AttackResult(y_adv=y_adv.detach(), delta=delta_final, runtime_sec=time.perf_counter() - start)
 
 
-def get_loader(example: str, init_method: str, batch_size: int, split: str, n_train: int, n_test: int, num_workers: int, data_root: Optional[str] = None):
+def get_loader(example: str, init_method: str, batch_size: int, split: str, n_train: int, n_test: int, num_workers: int, data_root: Optional[str] = None, noise: str = ""):
     root = data_root or f"{example}_out"
     if example == "ellipses":
         return get_ellipse_dataloader(
@@ -444,6 +444,7 @@ def get_loader(example: str, init_method: str, batch_size: int, split: str, n_tr
             shuffle=False,
             num_workers=num_workers,
             device=None,
+            noise=noise,
         )
     #return get_lodopab_dataloader(
     #    init_recon=init_method,
@@ -511,7 +512,7 @@ def load_model_checkpoint(
             [base / f"init_{init_method}{noise}" / f"checkpoints{noise}" / f"{model_name}_best.pt"]
             if base else []
         ),
-        Path(f"runs_{example}") / f"init_{init_method}{noise}" / "checkpoints{noise}" / f"{model_name}_best.pt",
+        Path(f"runs_{example}") / f"init_{init_method}{noise}" / f"checkpoints{noise}" / f"{model_name}_best.pt",
         Path(f"checkpoints{noise}") / f"{model_name}_best.pt",
     ]
     print(f"Model path and checkpoint path: {candidates} and  {model_dir}")
@@ -896,6 +897,7 @@ def main() -> None:
             n_test=args.n_test,
             num_workers=args.num_workers,
             data_root=args.data_root,
+            noise=i,
         )
 
         init_reconstructor = InitReconstructor(example=example, init_method=init_method, summary=summary, radon=radon)
@@ -990,31 +992,30 @@ def main() -> None:
 
                     remaining_slots = args.save_examples - len(example_rows)
                     if remaining_slots > 0:
-                        for i in range(min(x_gt.shape[0], remaining_slots)):
+                        for j in range(min(x_gt.shape[0], remaining_slots)):
                             e_ran_clean, e_nul_clean = decompose_error(
-                                clean_pred[i: i + 1] - x_gt[i: i + 1], radon
+                                clean_pred[j: j + 1] - x_gt[j: j + 1], radon
                             )
                             e_ran_adv, e_nul_adv = decompose_error(
-                                adv_pred[i: i + 1] - x_gt[i: i + 1], radon
+                                adv_pred[j: j + 1] - x_gt[j: j + 1], radon
                             )
-                            fbp_delta = radon.fbp_la(attack_result.delta[i: i + 1])
+                            fbp_delta = radon.fbp_la(attack_result.delta[j: j + 1])
                             e_ran_fbp_d, _ = decompose_error(fbp_delta, radon)
                             example_rows.append(
                                 {
-                                    "x_gt": to_numpy_img(x_gt[i]),
-                                    "clean_init": to_numpy_img(clean_init[i]),
-                                    "adv_init": to_numpy_img(adv_init[i]),
-                                    "clean_pred": to_numpy_img(clean_pred[i]),
-                                    "adv_pred": to_numpy_img(adv_pred[i]),
-                                    "clean_y": to_numpy_img(y_clean[i]),
-                                    "adv_y": to_numpy_img(y_adv[i]),
-                                    "delta": to_numpy_img(attack_result.delta[i]),
+                                    "x_gt": to_numpy_img(x_gt[j]),
+                                    "clean_init": to_numpy_img(clean_init[j]),
+                                    "adv_init": to_numpy_img(adv_init[j]),
+                                    "clean_pred": to_numpy_img(clean_pred[j]),
+                                    "adv_pred": to_numpy_img(adv_pred[j]),
+                                    "clean_y": to_numpy_img(y_clean[j]),
+                                    "adv_y": to_numpy_img(y_adv[j]),
+                                    "delta": to_numpy_img(attack_result.delta[j]),
                                     "e_ran_clean": e_ran_clean.squeeze().numpy(),
                                     "e_nul_clean": e_nul_clean.squeeze().numpy(),
                                     "e_ran_adv": e_ran_adv.squeeze().numpy(),
                                     "e_nul_adv": e_nul_adv.squeeze().numpy(),
                                     "proj_ran_fbp_delta": e_ran_fbp_d.squeeze().numpy(),
-
                                 }
                             )
 
@@ -1047,7 +1048,7 @@ def main() -> None:
                 print(
                     f"[model={model_name} attack={attack_name}] "
                     f"n={len(rows)} adv_rel_l2={summary_metrics.get('adv_rel_l2_mean', float('nan')):.4f} "
-                    f"success_rel_l2={summary_metrics.get('success_rel_l2_mean', float('nan')):.3f}"
+                    f"success_rel_l2={summary_metrics.get('success_rel_l2_mean', float('nan')):.3f} "
                     f"clean_rel_l2={summary_metrics.get('clean_rel_l2_mean', float('nan')):.3f}"
                 )
                 for attack_name, rows_by_model in scatter_rows.items():
