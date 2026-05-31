@@ -68,7 +68,7 @@ python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $D
 
 echo "Finished Adversarial Attack at: $(date)"
 
-python -u test_radon.py --data-root $DATA_DIR
+#python -u test_radon.py --data-root $DATA_DIR
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 
