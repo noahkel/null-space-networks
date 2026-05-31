@@ -167,6 +167,7 @@ def main():
     omega = (LW_OMEGA_FACTOR / radon.norm_A2)
 
     y_diff_norms: List[float] = []
+    y_norms: List[float] = []
     subset = []
 
     print("Generating data...")
@@ -180,6 +181,7 @@ def main():
         add_noise = NOISE_sigma_REL * y.abs().max() * noise / 100
         y_delta = y + add_noise
 
+        y_norms.append(float(torch.linalg.norm(y.reshape(-1))))
         y_diff_norms.append(float(torch.linalg.norm((add_noise).reshape(-1))))
 
         x_fbp = radon_full.fbp_la(y_delta).squeeze()
@@ -272,6 +274,7 @@ def main():
         "device": DEVICE,
         "add_noise": None,
         "noise_sigma_rel": float(NOISE_sigma_REL),
+        "mean_norm_y": float(np.array(y_norms).mean()),
         "mean_norm_y_minus_y_delta": float(y_diff_norms.mean()),
         "tv_alpha_grid": [float(a) for a in TV_ALPHA_GRID.tolist()],
         "tv_alpha_errors_subset": alpha_errors,

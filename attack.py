@@ -845,7 +845,10 @@ def main() -> None:
     parser.add_argument("--models", default="resnet,nsn,dpnsn,dpnsn_res")
     parser.add_argument("--attacks", default="pgd,fgsm,spsa")
     parser.add_argument("--norm", default="l2", choices=["l2", "linf"])
-    parser.add_argument("--eps", type=float, default=5.0)
+    parser.add_argument("--eps", type=float, default=1.0,
+                        help="Attack budget multiplier. For noisy data: eps_actual = eps * beta "
+                             "(noise norm). For zero-noise data: eps_actual = eps * mean_norm_y "
+                             "(sinogram norm), so eps=0.02 gives ~2%% perturbation.")
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--steps", type=int, default=40)
     parser.add_argument("--restarts", type=int, default=3)
@@ -882,11 +885,17 @@ def main() -> None:
     example = args.type
     init_method = args.init.lower()
 
-    for i in ("0.0"):
+    for i in ("0.0",):
         summary = load_summary(example, i, data_root=args.data_root)
         beta = float(summary["mean_norm_y_minus_y_delta"])
         radon = build_radon(summary, device=device)
-        eps = args.eps * beta
+        # For zero-noise data beta==0, so scale by sinogram norm instead.
+        # args.eps is then interpreted as a fraction of mean ||y||.
+        if beta > 0:
+            eps = args.eps * beta
+        else:
+            mean_sino_norm = float(summary.get("mean_norm_y") or 0.0)
+            eps = args.eps * mean_sino_norm if mean_sino_norm > 0 else args.eps
         loader = get_loader(
             example=example,
             init_method=init_method,
