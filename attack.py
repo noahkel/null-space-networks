@@ -141,7 +141,7 @@ class InitReconstructor:
 
         if self.init_method == "pinv":
             sigma_sino = self.noise_sigma_rel * float(y.abs().max())
-            return self.radon.backward_la_tikhonov(y, lambda_reg=sigma_sino ** 2)
+            return self.radon.backward_la(y, lambda_reg=sigma_sino ** 2)
 
         x0 = self._fbp_seed(y)
 
