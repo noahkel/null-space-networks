@@ -39,9 +39,10 @@ import argparse
 #   And an example image of the generated dataset
 #
 def single_rectangle_generator(dataset, part='train'):
+    seed = dataset.fixed_seeds.get(part)
+    r = np.random.RandomState(seed)
+
     for i in range(dataset.get_len(part=part)):
-        seed = dataset.fixed_seeds.get(part) + i
-        r = np.random.RandomState(seed)
         min_area = 0.1
         while True:
             a1 = 0.2 * r.exponential(1.0)
