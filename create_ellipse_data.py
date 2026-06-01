@@ -189,7 +189,7 @@ def main():
     samples: List[Tuple[torch.Tensor, torch.Tensor]] = []
 
     for i in range(N_SAMPLES):
-        x_gt = torch.from_numpy(next(g).data).to(DEVICE)
+        x_gt = torch.from_numpy(next(gen).data).to(DEVICE)
 
         y = radon_full.forward_la(to_4d(x_gt))
         noise = radon_full.proj_ran(torch.randn_like(y))
