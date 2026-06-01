@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Tuple, List
 
+from matplotlib import image
 import numpy as np
 import torch
 
@@ -11,7 +12,7 @@ from dival.datasets import EllipsesDataset
 from src.utils import ensure_dir, set_seed, rel_l2, save_image_with_colorbar, to_4d
 from src.total_variation import tv_cp
 from src.landweber import landweber
-from odl.phantom import ellipsoid_phantom
+from odl.phantom import ellipsoid_phantom, cuboid
 
 import argparse
 
@@ -37,6 +38,20 @@ import argparse
 #   Also saves TV and Landweber reconstructions for use during training and testing
 #   And an example image of the generated dataset
 #
+def single_rectangle_generator(dataset, part='train'):
+    for i in range(dataset.get_len(part=part)):
+        seed = dataset.fixed_seeds.get(part) + i
+        r = np.random.RandomState(seed)
+        min_area = 0.1
+        while True:
+            a1 = 0.2 * r.exponential(1.0)
+            a2 = 0.2 * r.exponential(1.0)
+            if a1*a2<min_area:
+                continue
+            x   = r.uniform(-0.3, 0.3)   # tighter center range
+            y   = r.uniform(-0.3, 0.3)
+            image = cuboid(dataset.space, [y -a2/2, x-a1/2],[y+a2/2, x+a1/2])
+            yield image
 
 def single_ellipse_generator(dataset, part='train'):
     """Generator yielding images with exactly one random ellipse, centered and contained."""
@@ -125,7 +140,7 @@ def main():
     # dataset
     dataset = EllipsesDataset(image_size=IMG_SIZE)
     gen = single_ellipse_generator(dataset, 'train') #dataset.generator('train')   #single_ellipse_generator(dataset, 'train')
-
+    gen = single_rectangle_generator(dataset, 'train')
     # radon
     dx = 1.0
     angles = np.linspace(0, 180, NUM_ANGLES, endpoint=False) * np.pi / 180
@@ -174,7 +189,7 @@ def main():
     samples: List[Tuple[torch.Tensor, torch.Tensor]] = []
 
     for i in range(N_SAMPLES):
-        x_gt = torch.from_numpy(next(gen).data).to(DEVICE)
+        x_gt = torch.from_numpy(next(g).data).to(DEVICE)
 
         y = radon_full.forward_la(to_4d(x_gt))
         noise = radon_full.proj_ran(torch.randn_like(y))
@@ -188,8 +203,6 @@ def main():
 
         x_pinv = radon.backward_la(y_delta).squeeze()
         x_pinv_full = radon_full.backward_la(y_delta).squeeze()
-
-
         np.save(OUT_DIR / f"gt{NOISE_sigma_REL}" / f"{i:05d}.npy", x_gt.detach().cpu().numpy())
         np.save(OUT_DIR / f"fbp{NOISE_sigma_REL}" / f"{i:05d}.npy", x_fbp.detach().cpu().numpy())
         np.save(OUT_DIR / f"pinv{NOISE_sigma_REL}" / f"{i:05d}.npy", x_pinv.detach().cpu().numpy())
