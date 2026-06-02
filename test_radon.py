@@ -697,15 +697,18 @@ def main():
                                model_dir=args.model_dir, model_type="resnet")
         import matplotlib.pyplot as plt
 
-        s = matrix_r._s_k_la.cpu().numpy()          # singular values of A_la, sorted descending
+        s = matrix_r._s_k.cpu().numpy()
+        sf = matrix_r_full._s_k.cpu().numpy()
+        sla = matrix_r._s_k_la.cpu().numpy()
+        sfla = matrix_r_full._s_k_la.cpu().numpy()          # singular values of A_la, sorted descending
         s_max = s[0]
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
 
         # Left: full spectrum
-        ax1.semilogy(s / s_max)
-        ax1.axhline(1e-3, color='r', linestyle='--', label='1e-3')
-        ax1.axhline(1e-2, color='orange', linestyle='--', label='1e-2')
-        ax1.axhline(0.5 / s_max, color='g', linestyle='--', label=f'σ_noise/s_max ≈ {0.5/s_max:.4f}')
+        ax1.semilogy(s / s_max, label="full spectrum, A_threshold=%.1e" % svd_thresh)
+        ax1.semilogy(sf / s_max, label="full spectrum, A_full (threshold=1e-15)")
+        ax1.semilogy(sla / s_max, label="la spectrum, A_threshold=%.1e" % svd_thresh)
+        ax1.semilogy(sfla / s_max, label="la spectrum, A_full (threshold=1e-15)")
         ax1.set_xlabel("Singular value index")
         ax1.set_ylabel("s_k / s_max")
         ax1.set_title("A_la singular value spectrum")
@@ -714,7 +717,14 @@ def main():
         # Right: how many dims in null space at each threshold
         thresholds = np.logspace(-4, -1, 100)
         null_dims = [(s < t * s_max).sum() for t in thresholds]
-        ax2.semilogx(thresholds, null_dims)
+        null_dimsf = [(sf < t * s_max).sum() for t in thresholds]
+        null_dimsla = [(sla < t * s_max).sum() for t in thresholds]
+        null_dimsfla = [(sfla < t * s_max).sum() for t in thresholds]
+
+        ax2.semilogx(thresholds, null_dims, label="full spectrum, A_threshold=%.1e" % svd_thresh)
+        ax2.semilogx(thresholds, null_dimsf, label="full spectrum, A_full (threshold=1e-15)")
+        ax2.semilogx(thresholds, null_dimsla, label="la spectrum, A_threshold=%.1e" % svd_thresh)
+        ax2.semilogx(thresholds, null_dimsfla, label="la spectrum, A_full (threshold=1e-15)")
         ax2.axhline(16384 / 3, color='k', linestyle='--', label='Expected (1/3 of pixels)')
         ax2.axvline(1e-3, color='r', linestyle='--', label='1e-3')
         ax2.set_xlabel("SVD threshold")
