@@ -42,17 +42,20 @@ def single_rectangle_generator(dataset, part='train'):
     seed = dataset.fixed_seeds.get(part)
     r = np.random.RandomState(seed)
 
+    lo, hi = np.asarray(dataset.space.min_pt), np.asarray(dataset.space.max_pt)
+    center, half = (hi + lo) / 2, (hi - lo) / 2
+    to_abs = lambda pt: (center + np.asarray(pt) * half).tolist()
+
+    min_area = 0.1
     for i in range(dataset.get_len(part=part)):
-        min_area = 0.1
         while True:
-            a1 = r.uniform(0.1, 0.5)
-            a2 = r.uniform(0.1, 0.5)
+            a1 = 0.2 * r.exponential(1.0)
+            a2 = 0.2 * r.exponential(1.0)
             if a1*a2<min_area:
-                continue
-            x   = r.uniform(-0.3, 0.3)   # tighter center range
-            y   = r.uniform(-0.3, 0.3)
-            break
-        image = cuboid(dataset.space, [y -a2/2, x-a1/2],[y+a2/2, x+a1/2])
+                break
+        x   = r.uniform(-0.3, 0.3)   # tighter center range
+        y   = r.uniform(-0.3, 0.3)
+        image = cuboid(dataset.space, to_abs([y -a2/2, x-a1/2]), to_abs([y+a2/2, x+a1/2]))
         yield image
 
 def single_ellipse_generator(dataset, part='train'):
