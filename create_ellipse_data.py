@@ -51,7 +51,7 @@ def single_rectangle_generator(dataset, part='train'):
         while True:
             a1 = 0.2 * r.exponential(1.0)
             a2 = 0.2 * r.exponential(1.0)
-            if a1*a2<min_area:
+            if a1*a2>=min_area:
                 break
         x   = r.uniform(-0.3, 0.3)   # tighter center range
         y   = r.uniform(-0.3, 0.3)
