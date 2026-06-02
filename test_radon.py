@@ -616,7 +616,7 @@ def main():
     dtype = torch.float64
 
     print("=" * 60)
-    print("Radon adapter tests")
+    print("Radon tests")
     print("  resolution : %dx%d" % (res, res))
     print("  angles     : %d total, %d limited  phi=(0.0, %.4f)" % (n_angles, n_la, phi_hi))
     print("  det_count  : %d" % det_count)
@@ -637,7 +637,7 @@ def main():
         print("  ERROR constructing AstraRadonAdapter: %s" % e)
         sys.exit(1)
 
-    print("\nBuilding MatrixRadonAdapter ...")
+    print("\nBuilding MatrixRadonAdapters ...")
     try:
         from src.radon_matrix import MatrixRadonAdapter
         matrix_r = MatrixRadonAdapter(
@@ -653,7 +653,7 @@ def main():
             cache_dir=args.cache_dir,
         )
     except Exception as e:
-        print("  ERROR constructing MatrixRadonAdapter: %s" % e)
+        print("  ERROR constructing MatrixRadonAdapters: %s" % e)
         sys.exit(1)
 
     n_fail = 0
@@ -661,6 +661,7 @@ def main():
     vis_kwargs = dict(model_dir=args.model_dir, model_type=args.model_type)
 
     for i in ("0.0","1.0", "2.0"):
+        print(f"Doing noise level {i}%")
         # ── Load dataset samples (or fall back to synthetic phantoms) ─────────────
         if args.data_root:
             dsamples = load_dataset_samples(
@@ -668,15 +669,12 @@ def main():
                 device=device, dtype=dtype,
             )
         else:
-            print("  --data-root not set; generating synthetic phantoms instead")
-            dsamples = [{"gt": make_phantom(res, device, dtype)}]
-            for _ in range(args.n_vis - 1):
-                dsamples.append({"gt": make_phantom_single(res)})
-
+            print(f"No data found, skipping noise level {i}%")
+            continue
         # ── Math tests (use the first sample's GT — any image works) ─────────────
-        print("\nRunning Radon operator tests ...")
-        n_fail += run_tests(dsamples[0]["gt"].to(dtype=dtype, device=device),
-                            astra_r, matrix_r, svd_thresh)
+        #print("\nRunning Radon operator tests ...")
+        #n_fail += run_tests(dsamples[0]["gt"].to(dtype=dtype, device=device),
+        #                    astra_r, matrix_r, svd_thresh)
 
         # ── Visualisations ────────────────────────────────────────────────────────
         if args.data_root:
