@@ -31,8 +31,8 @@
   "adam_consistency_weight": 0.0,
   "save_examples": 6,
   "out_dir": null,
-  "data_root": "/scratch/noah/data/ellipses_out_matrices",
-  "model_dir": "/scratch/noah/models_matrices",
+  "data_root": "/scratch/noah/data/rectangles_out_matrices",
+  "model_dir": "/scratch/noah/models_rectangles_matrices",
   "device": "cuda",
   "summary_path": "ellipses0.0_out/summary0.0.json"
 }
