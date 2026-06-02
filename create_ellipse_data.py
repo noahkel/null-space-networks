@@ -45,14 +45,15 @@ def single_rectangle_generator(dataset, part='train'):
     for i in range(dataset.get_len(part=part)):
         min_area = 0.1
         while True:
-            a1 = 0.2 * r.exponential(1.0)
-            a2 = 0.2 * r.exponential(1.0)
+            a1 = r.uniform(-0.5, 0.5)
+            a2 = r.uniform(-0.5, 0.5)
             if a1*a2<min_area:
                 continue
             x   = r.uniform(-0.3, 0.3)   # tighter center range
             y   = r.uniform(-0.3, 0.3)
-            image = cuboid(dataset.space, [y -a2/2, x-a1/2],[y+a2/2, x+a1/2])
-            yield image
+            break
+        image = cuboid(dataset.space, [y -a2/2, x-a1/2],[y+a2/2, x+a1/2])
+        yield image
 
 def single_ellipse_generator(dataset, part='train'):
     """Generator yielding images with exactly one random ellipse, centered and contained."""
@@ -190,8 +191,9 @@ def main():
     samples: List[Tuple[torch.Tensor, torch.Tensor]] = []
 
     for i in range(N_SAMPLES):
-        x_gt = torch.from_numpy(next(gen).data).to(DEVICE)
 
+        x_gt = torch.from_numpy(next(gen).data).to(DEVICE)
+        print(f"groundtruth: {torch.count_nonzero(x_gt)}")
         y = radon_full.forward_la(to_4d(x_gt))
         noise = radon_full.proj_ran(torch.randn_like(y))
         add_noise = NOISE_sigma_REL * y.abs().max() * noise / 100
