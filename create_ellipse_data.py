@@ -45,8 +45,8 @@ def single_rectangle_generator(dataset, part='train'):
     for i in range(dataset.get_len(part=part)):
         min_area = 0.1
         while True:
-            a1 = r.uniform(-0.5, 0.5)
-            a2 = r.uniform(-0.5, 0.5)
+            a1 = r.uniform(0.1, 0.5)
+            a2 = r.uniform(0.1, 0.5)
             if a1*a2<min_area:
                 continue
             x   = r.uniform(-0.3, 0.3)   # tighter center range
