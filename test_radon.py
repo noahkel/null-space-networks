@@ -382,10 +382,10 @@ def visualise_results(dataset_samples, astra_r, matrix_r, matrix_r_full, n_la, r
         # ── Per-row data ──────────────────────────────────────────────────────────
         rows = []
         for name, init_key, recon_t in init_tensors:
-            if "full" in init_key:
+            """if "full" in init_key:
                 init_data = decomp(recon_t, matrix_r_full)
-            else:
-                init_data = decomp(recon_t, matrix_r)
+            else:"""
+            init_data = decomp(recon_t, matrix_r)
 
             row_model = model_cache[init_key]
             model_data = None
