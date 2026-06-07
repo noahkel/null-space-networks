@@ -62,7 +62,14 @@ def eval_one_epoch(
     return running / max(n, 1)
 
 
-def main(example, out_dir, data_dir, models, init_methods, noise_levels):
+def detect_init_methods(data_dir: Path) -> List[str]:
+    """Auto-detect available init-reconstruction folders in a data directory
+    produced by create_ellipse_data.py (e.g. fbp, pinv, pinv_full)."""
+    known = ["tv", "fbp", "lw", "pinv", "tikh", "pinv_full"]
+    return [m for m in known if (data_dir / m).is_dir()]
+
+
+def main(example, out_dir, data_dir, models):
     set_seed(42)
 
 
@@ -72,7 +79,6 @@ def main(example, out_dir, data_dir, models, init_methods, noise_levels):
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    INIT_METHODS = init_methods
     MODELS_TO_TRAIN = models
 
     EPOCHS = 50
@@ -80,182 +86,190 @@ def main(example, out_dir, data_dir, models, init_methods, noise_levels):
     LR = 1e-4
     NUM_WORKERS = 4
 
+    # -------------------------
+    # Load summary produced by create_ellipse_data.py
+    # -------------------------
+    summary_path = DATA_ROOT / "summary.json"
+    print(summary_path)
+    with open(summary_path, "r") as f:
+        summary = json.load(f)
+    print("loaded summary :)")
+    IMG_SIZE = int(summary["img_size"])
+    NUM_ANGLES = int(summary["num_angles"])
+    DET_COUNT = int(summary["det_count"])
+    BETA = float(summary["mean_norm_y_minus_y_delta"])
+    ANGLES = summary["angles"]
+    PHI = summary["phi"]
+    MATRIX_MODE = int(summary["matrix_mode"])
+    SVD_THRESH = float(summary.get("svd_threshold", 1e-3))
+    dx = summary["dx"]
 
-    for i in noise_levels:
-        summary_path = DATA_ROOT / f"summary{i}.json"
-        print(summary_path)
-        with open(summary_path, "r") as f:
-            summary = json.load(f)
-        print("loaded summary :)")
-        IMG_SIZE = int(summary["img_size"])
-        NUM_ANGLES = int(summary["num_angles"])
-        DET_COUNT = int(summary["det_count"])
-        BETA = float(summary["mean_norm_y_minus_y_delta"])
-        ANGLES = summary["angles"]
-        PHI = summary["phi"]
-        MATRIX_MODE = int(summary["matrix_mode"])
-        SVD_THRESH = float(summary.get("svd_threshold", 1e-3))
-        dx = summary["dx"]
+    n_train = 4000
+    n_test = 1000
 
-        n_train = 4000
-        n_test = 1000
+    # -------------------------
+    # Auto-detect init methods from the data directory
+    # -------------------------
+    INIT_METHODS = detect_init_methods(DATA_ROOT)
+    if not INIT_METHODS:
+        raise FileNotFoundError(
+            f"No init-reconstruction folders (fbp, pinv, pinv_full, ...) found in {DATA_ROOT}"
+        )
+    print(f"Detected init methods: {INIT_METHODS}")
 
-        # -------------------------
-        # Build radon geometry
-        # -------------------------
-        # angles = np.linspace(-np.pi/3, np.pi/3, NUM_ANGLES, endpoint=False).astype(np.float32)
-        angles = np.asarray(ANGLES)
-        # print(angles)
-        phi = tuple(PHI)
-        # print(phi)
-        if MATRIX_MODE == 1:
-            radon = MatrixRadonAdapter(
-                resolution=IMG_SIZE,
-                angles=angles,
-                det_count=DET_COUNT,
-                dx=dx,
-                phi=phi,
-                device=DEVICE,
-                svd_threshold=SVD_THRESH,
-                cache_dir="radon_cache",
+    # -------------------------
+    # Build radon geometry
+    # -------------------------
+    # angles = np.linspace(-np.pi/3, np.pi/3, NUM_ANGLES, endpoint=False).astype(np.float32)
+    angles = np.asarray(ANGLES)
+    # print(angles)
+    phi = tuple(PHI)
+    # print(phi)
+    if MATRIX_MODE == 1:
+        radon = MatrixRadonAdapter(
+            resolution=IMG_SIZE,
+            angles=angles,
+            det_count=DET_COUNT,
+            dx=dx,
+            phi=phi,
+            device=DEVICE,
+            svd_threshold=SVD_THRESH,
+            cache_dir="radon_cache",
+        )
+    else:
+        radon = AstraRadonAdapter(
+            resolution=IMG_SIZE,
+            angles=angles,
+            det_count=DET_COUNT,
+            dx=dx,
+            phi=phi,
+            device=DEVICE
+        )
+    print(f"Loaded summary from {summary_path}")
+    print(f"IMG_SIZE={IMG_SIZE}, NUM_ANGLES={NUM_ANGLES}, DET_COUNT={DET_COUNT}, PHI={PHI}")
+    print(f"BETA (mean y_diff_norms) = {BETA:.6e}")
+
+    for init in INIT_METHODS:
+        run_dir = OUT_DIR / f"init_{init}"
+        (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+        (run_dir / "examples").mkdir(parents=True, exist_ok=True)
+
+        if example == 'ellipses':
+            train_loader = get_ellipse_dataloader(
+                init_recon=init,
+                batch_size=BATCH_SIZE,
+                split="train",
+                n_train=n_train,
+                n_test=n_test,
+                data_root=DATA_ROOT,
+                shuffle=True,
+                num_workers=NUM_WORKERS,
+                device=None,
+                noise="",
+            )
+
+            val_loader = get_ellipse_dataloader(
+                init_recon=init,
+                batch_size=BATCH_SIZE,
+                split="test",
+                n_train=n_train,
+                n_test=n_test,
+                data_root=DATA_ROOT,
+                shuffle=False,
+                num_workers=NUM_WORKERS,
+                device=None,
+                noise=""
             )
         else:
-            radon = AstraRadonAdapter(
-                resolution=IMG_SIZE,
-                angles=angles,
-                det_count=DET_COUNT,
-                dx=dx,
-                phi=phi,
-                device=DEVICE
+            '''
+            train_loader = get_lodopab_dataloader(
+                init_recon=init,
+                batch_size=BATCH_SIZE,
+                split="train",
+                n_train=n_train,
+                n_test=n_test,
+                data_root=DATA_ROOT,
+                shuffle=True,
+                num_workers=NUM_WORKERS,
+                device=None,
             )
-        print(f"Loaded summary from {summary_path}")
-        print(f"IMG_SIZE={IMG_SIZE}, NUM_ANGLES={NUM_ANGLES}, DET_COUNT={DET_COUNT}, PHI={PHI}")
-        print(f"BETA (mean y_diff_norms) = {BETA:.6e}")
 
-        for init in INIT_METHODS:
-            run_dir = OUT_DIR / f"init_{init}{i}"
-            (run_dir / f"checkpoints{i}").mkdir(parents=True, exist_ok=True)
-            (run_dir / f"examples{i}").mkdir(parents=True, exist_ok=True)
+            val_loader = get_lodopab_dataloader(
+                init_recon=init,
+                batch_size=BATCH_SIZE,
+                split="test",
+                n_train=n_train,
+                n_test=n_test,
+                data_root=DATA_ROOT,
+                shuffle=False,
+                num_workers=NUM_WORKERS,
+                device=None,
+            )
+            '''
+            raise NotImplementedError("Lodopab not implemented yet")
 
-            if example == 'ellipses':
-                train_loader = get_ellipse_dataloader(
-                    init_recon=init,
-                    batch_size=BATCH_SIZE,
-                    split="train",
-                    n_train=n_train,
-                    n_test=n_test,
-                    data_root=DATA_ROOT,
-                    shuffle=True,
-                    num_workers=NUM_WORKERS,
-                    device=None,
-                    noise=i,
-                )
+        models = build_models(MODELS_TO_TRAIN, radon=radon, beta=BETA)
 
-                val_loader = get_ellipse_dataloader(
-                    init_recon=init,
-                    batch_size=BATCH_SIZE,
-                    split="test",
-                    n_train=n_train,
-                    n_test=n_test,
-                    data_root=DATA_ROOT,
-                    shuffle=False,
-                    num_workers=NUM_WORKERS,
-                    device=None,
-                    noise=i
-                )
-            else:
-                '''
-                train_loader = get_lodopab_dataloader(
-                    init_recon=init,
-                    batch_size=BATCH_SIZE,
-                    split="train",
-                    n_train=n_train,
-                    n_test=n_test,
-                    data_root=DATA_ROOT,
-                    shuffle=True,
-                    num_workers=NUM_WORKERS,
-                    device=None,
-                )
-    
-                val_loader = get_lodopab_dataloader(
-                    init_recon=init,
-                    batch_size=BATCH_SIZE,
-                    split="test",
-                    n_train=n_train,
-                    n_test=n_test,
-                    data_root=DATA_ROOT,
-                    shuffle=False,
-                    num_workers=NUM_WORKERS,
-                    device=None,
-                )
-                '''
-                raise NotImplementedError("Lodopab not implemented yet")
+        for name, model in models.items():
+            model = model.to(DEVICE)
+            optimizer = torch.optim.Adam(model.parameters(), lr=LR)
 
-            models = build_models(MODELS_TO_TRAIN, radon=radon, beta=BETA)
+            best_val = float("inf")
+            ckpt_path = run_dir / "checkpoints" / f"{name}_best.pt"
 
-            for name, model in models.items():
-                model = model.to(DEVICE)
-                optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+            for epoch in range(1, EPOCHS + 1):
+                tr = train_one_epoch(model, train_loader, optimizer, DEVICE)
+                va = eval_one_epoch(model, val_loader, DEVICE)
+                print(f"[init={init} | {name}] epoch {epoch:03d}/{EPOCHS} | train={tr:.6f} | val={va:.6f}")
 
-                best_val = float("inf")
-                ckpt_path = run_dir / f"checkpoints{i}" / f"{name}_best.pt"
+                if va < best_val:
+                    best_val = va
+                    torch.save(
+                        {
+                            "init": init,
+                            "model_name": name,
+                            "state_dict": model.state_dict(),
+                            "val_loss": best_val,
+                            "epoch": epoch,
+                        },
+                        ckpt_path,
+                    )
 
-                for epoch in range(1, EPOCHS + 1):
-                    tr = train_one_epoch(model, train_loader, optimizer, DEVICE)
-                    va = eval_one_epoch(model, val_loader, DEVICE)
-                    print(f"[init={init} | {name}] epoch {epoch:03d}/{EPOCHS} | train={tr:.6f} | val={va:.6f}")
+            print(f"[init={init} | {name}] best val={best_val:.6f} saved to {ckpt_path}")
 
-                    if va < best_val:
-                        best_val = va
-                        torch.save(
-                            {
-                                "init": init,
-                                "model_name": name,
-                                "state_dict": model.state_dict(),
-                                "val_loss": best_val,
-                                "epoch": epoch,
-                            },
-                            ckpt_path,
-                        )
+            # save example recon output with best weights
+            ckpt = torch.load(ckpt_path, map_location=DEVICE)
+            model.load_state_dict(ckpt["state_dict"])
 
-                print(f"[init={init} | {name}] best val={best_val:.6f} saved to {ckpt_path}")
-
-                # save example recon output with best weights
-                ckpt = torch.load(ckpt_path, map_location=DEVICE)
-                model.load_state_dict(ckpt["state_dict"])
-
-                ex_path = run_dir / f"examples{i}" / f"{name}_example.png"
-                save_example_outputs(
-                    model=model,
-                    loader=val_loader,
-                    device=DEVICE,
-                    out_path=ex_path,
-                    title=f"init={init} | model={name} | best_val={best_val:.6f}",
-                )
-                print(f"[init={init} | {name}] example saved to {ex_path}")
+            ex_path = run_dir / "examples" / f"{name}_example.png"
+            save_example_outputs(
+                model=model,
+                loader=val_loader,
+                device=DEVICE,
+                out_path=ex_path,
+                title=f"init={init} | model={name} | best_val={best_val:.6f}",
+            )
+            print(f"[init={init} | {name}] example saved to {ex_path}")
 
 def parse_list_arg(value: str) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
-def parse_noise_levels(value: str) -> List[float]:
-    return [float(item.strip()) for item in value.split(",") if item.strip()]
 if __name__ == "__main__":
     #Initialization of parameters
     parser = argparse.ArgumentParser()
     parser.add_argument("--type", type=str)
     parser.add_argument("--out_dir", type=str, default='./')
-    parser.add_argument("--data_dir", type=str, default='./')
+    parser.add_argument("--data_dir", type=str, default='./',
+                        help="A single data directory produced by create_ellipse_data.py "
+                             "(e.g. ./data/0.01), containing summary.json and the "
+                             "gt/sino/init-recon folders.")
     parser.add_argument("--models", type=str, default="resnet,nsn,dpnsn,dpnsn_res")
-    parser.add_argument("--init", type=str, default="fbp")
-    parser.add_argument("--noise_levels", type=str, default="0")
     #Setup Args
     args = parser.parse_args()
     model_names = parse_list_arg(args.models)
     out_dir = Path(args.out_dir)
     data_dir = Path(args.data_dir)
-    init_methods = parse_list_arg(args.init)
-    noise_levels = parse_list_arg(args.noise_levels)
     type = args.type
-    main(example=type, out_dir=out_dir, data_dir=data_dir, models=model_names, init_methods=init_methods, noise_levels=noise_levels)
+    main(example=type, out_dir=out_dir, data_dir=data_dir, models=model_names)
     print("Finished.")
 
 # sbatch -p a6000 -w mp-gpu4-a6000-2 --job-name=train -o logs/train.txt --time=30-00:00:00 --wrap="python -u main.py"
