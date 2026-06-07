@@ -525,6 +525,123 @@ def visualise_results(dataset_samples, astra_r, matrix_r, matrix_r_full, n_la, r
     plt.savefig(fname, dpi=150, bbox_inches="tight")
     print(f"\nSaved → {fname}")
     plt.close(fig)
+def summarise_results(dataset_samples, matrix_r, matrix_r_full, n_la, res, n_angles,
+                      model_dir=None, model_type="nsn", device="cuda", noise="0.0",
+                      out_path=None):
+    """
+    Aggregate error statistics over the *whole* dataset.
+
+    For every sample, every init method (fbp / pinv / pinv_full) and — when a
+    checkpoint exists — the model output, compute the RMSE of:
+        total error  e = recon − GT
+        range error  A_la^+ A_la e   (scanner-visible)
+        null error   e − A_la^+ A_la e   (scanner-invisible)
+
+    Then report the mean and median of each across all samples and print a table.
+
+    Returns a dict keyed by (label, stage) → {"total","range","null": np.ndarray}
+    of the per-sample RMSE values, so callers can do further analysis if needed.
+    """
+    INIT_LABELS = {
+        "fbp":       "FBP (Saved)",
+        "pinv":      "Pinv (Saved)",
+        "pinv_full": "Pinv Full (Saved)",
+    }
+
+    def rmse(e):
+        return float(np.sqrt(np.mean(e[np.isfinite(e)] ** 2))) if np.any(np.isfinite(e)) else float("nan")
+
+    def decomp_rmse(recon_t, x_gt_t, radon):
+        """Return (total_rmse, range_rmse, null_rmse) for recon vs ground truth."""
+        r64 = recon_t.to(dtype=radon.dtype, device=radon.device)
+        x64 = x_gt_t.to(dtype=radon.dtype, device=radon.device)
+        e_t     = r64 - x64
+        e_nul_t = radon.proj_null_la(e_t)
+        e_ran_t = e_t - e_nul_t
+        return (
+            rmse(to_np(e_t[0, 0])),
+            rmse(to_np(e_ran_t[0, 0])),
+            rmse(to_np(e_nul_t[0, 0])),
+        )
+
+    # stats[(label, stage)] = {"total": [...], "range": [...], "null": [...]}
+    stats: dict = {}
+
+    def _record(label, stage, total, rng, nul):
+        key = (label, stage)
+        d = stats.setdefault(key, {"total": [], "range": [], "null": []})
+        d["total"].append(total)
+        d["range"].append(rng)
+        d["null"].append(nul)
+
+    # Cache one model per init_key across all samples (avoid re-loading each time).
+    model_cache: dict = {}
+
+    for s in dataset_samples:
+        x_gt_t = s["gt"].to(dtype=matrix_r.dtype, device=device)
+        y_delta_t = s["y_delta"].to(dtype=matrix_r.dtype, device=device)
+
+        init_tensors = [
+            (INIT_LABELS[k], k, s[k].float().to(device))
+            for k in ("fbp", "pinv", "pinv_full") if k in s
+        ]
+
+        for name, init_key, recon_t in init_tensors:
+            # Init reconstruction error decomposition.
+            radon = matrix_r  # decomposition reference (matches visualise_results)
+            _record(name, "init", *decomp_rmse(recon_t, x_gt_t, radon))
+
+            # Model output (if a checkpoint exists for this init).
+            if init_key not in model_cache:
+                target = matrix_r_full if "full" in init_key else matrix_r
+                model_cache[init_key] = _find_and_load_model(
+                    model_dir, init_key, model_type, target, noise
+                )
+            row_model = model_cache[init_key]
+            if row_model is not None:
+                row_model.eval()
+                with torch.no_grad():
+                    out = row_model(recon_t.float().to(device),
+                                    y_delta_t.float().to(device))
+                _record(name, "model",
+                         *decomp_rmse(out.to(dtype=matrix_r.dtype), x_gt_t, matrix_r))
+
+    # ── Build table (print to console and optionally to a file) ────────────────
+    lines = []
+
+    def emit(line=""):
+        print(line)
+        lines.append(line)
+
+    n = len(dataset_samples)
+    emit("\n" + "=" * 78)
+    emit(f"Dataset error summary  |  noise={noise}  |  {n} samples  |  "
+         f"{res}x{res}, {n_angles} angles ({n_la} LA), model={model_type}")
+    emit("=" * 78)
+    emit(f"{'Method':<22}{'Stage':<7}{'':<10}{'total':>11}{'range':>11}{'null':>11}")
+    emit("-" * 78)
+
+    def _stat_rows(label, stage, d):
+        arrs = {k: np.asarray(v, dtype=np.float64) for k, v in d.items()}
+        means = {k: np.nanmean(a) if a.size else float("nan") for k, a in arrs.items()}
+        meds  = {k: np.nanmedian(a) if a.size else float("nan") for k, a in arrs.items()}
+        emit(f"{label:<22}{stage:<7}{'mean':<10}"
+             f"{means['total']:>11.3e}{means['range']:>11.3e}{means['null']:>11.3e}")
+        emit(f"{'':<22}{'':<7}{'median':<10}"
+             f"{meds['total']:>11.3e}{meds['range']:>11.3e}{meds['null']:>11.3e}")
+
+    for (label, stage), d in stats.items():
+        _stat_rows(label, stage, d)
+        emit("-" * 78)
+
+    if out_path is not None:
+        with open(out_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"Saved summary → {out_path}")
+
+    return stats
+
+
 def _load_model(checkpoint_path, model_type, matrix_r, device):
     """Load a model checkpoint and return the model in eval mode."""
     from src.utils import build_models
@@ -695,6 +812,16 @@ def main():
                                n_la, res, n_angles,
                                fname=f"radon_test_dataset_{i}_resnet.png", noise=i,
                                model_dir=args.model_dir, model_type="resnet")
+
+            print(f"\nSummarising error statistics over {len(dsamples)} samples (noise={i}) ...")
+            summarise_results(dsamples, matrix_r, matrix_r_full,
+                              n_la, res, n_angles, noise=i,
+                              out_path=f"radon_summary_{i}_{args.model_type}.txt",
+                              **vis_kwargs)
+            summarise_results(dsamples, matrix_r, matrix_r_full,
+                              n_la, res, n_angles, noise=i,
+                              model_dir=args.model_dir, model_type="resnet",
+                              out_path=f"radon_summary_{i}_resnet.txt")
         import matplotlib.pyplot as plt
 
         s = matrix_r._s_k.cpu().numpy()
