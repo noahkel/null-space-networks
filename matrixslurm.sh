@@ -37,8 +37,8 @@ python -c "import torch; print('PyTorch:', torch.__version__, '| CUDA available:
 echo "============================================"
 
 
-IMG_SIZE=128
-NOISE=0.01
+IMG_SIZE=128 #in Pixels
+NOISE=0.01 #in percent of
 MIN_ANGLE=0
 MAX_ANGLE=120
 NUM_THETAS=180
@@ -69,7 +69,7 @@ echo "Finished Training at: $(date)"
 
 echo "Finished Adversarial Attack at: $(date)"
 
-python -u test_radon.py --data-root $DATA_DIR
+#python -u test_radon.py --data-root $DATA_DIR
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 
