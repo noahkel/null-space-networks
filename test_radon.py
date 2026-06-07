@@ -2,9 +2,11 @@
 test_radon.py - Verification tests for AstraRadonAdapter and MatrixRadonAdapter.
 
 Run with:
-    python test_radon.py                    # fast (64x64, 30 angles)
-    python test_radon.py --full             # realistic (256x256, 60 angles)
-    python test_radon.py --res 128 --n-angles 40 --n-la 20 --svd-thresh 1e-4
+    python test_radon.py --data-dir ./data/0.01
+    python test_radon.py --data-dir ./data/0.01 --model-dir runs --model-type nsn
+
+Geometry (resolution, angles, det_count, phi, svd_threshold) is read from
+<data-dir>/summary.json, produced by create_ellipse_data.py.
 
 Tests
 -----
@@ -20,8 +22,8 @@ Tests
 """
 
 import argparse
+import json
 import sys
-import math
 from pathlib import Path
 import numpy as np
 import torch
@@ -237,13 +239,16 @@ def test_operator_norm(astra_r, matrix_r):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Radon adapter verification tests")
-    p.add_argument("--res",        type=int,   default=128,   help="Image resolution (default 64)")
-    p.add_argument("--n-angles",   type=int,   default=180,   help="Total projection angles (default 30)")
-    p.add_argument("--n-la",       type=int,   default=120,   help="Limited-angle count (default 15)")
-    p.add_argument("--svd-thresh", type=float, default=4e-3, help="SVD relative threshold (default 4e-3)")
+    p.add_argument("--data-dir", type=str, required=True,
+                   help="A single data directory produced by create_ellipse_data.py "
+                        "(e.g. ./data/0.01), containing summary.json and the "
+                        "gt/sino/init-recon folders. Geometry (resolution, angles, "
+                        "det_count, phi, svd_threshold) is read from summary.json.")
+    p.add_argument("--svd-thresh", type=float, default=None,
+                   help="Override the SVD relative threshold from summary.json "
+                        "(default: use the value stored in summary.json).")
     p.add_argument("--cache-dir",  type=str,   default="radon_cache", help="Cache directory for matrix/SVD files")
     p.add_argument("--device",     type=str,   default="cuda", help="Device: cpu / cuda / cuda:0 ...")
-    p.add_argument("--full",       action="store_true",      help="Params: 128x128, 180 angles")
     p.add_argument("--model-dir",  type=str, default="/home/noah/noah/models_matrices",
                    help="Base directory containing init_*/checkpoints/ sub-folders "
                         "(e.g. /home/noah/noah/models_matrices).  Each init row "
@@ -251,9 +256,6 @@ def parse_args():
     p.add_argument("--model-type", type=str,   default="nsn",
                    choices=["nsn", "resnet", "dpnsn", "dpnsn_res"],
                    help="Model architecture to load (default: nsn)")
-    p.add_argument("--data-root", type=str, default=None,
-                   help="Root directory of pre-generated dataset (contains gt0.0/, fbp0.0/, etc.)."
-                        " If omitted, falls back to generating synthetic phantoms.")
     p.add_argument("--n-vis", type=int, default=10,
                    help="Number of dataset samples to load for visualisation (default: 10)")
     return p.parse_args()
@@ -283,14 +285,14 @@ def to_np(t: torch.Tensor) -> np.ndarray:
     return t.detach().cpu().float().numpy()
 
 
-def _find_and_load_model(model_dir, init_key, model_type, matrix_r, noise):
+def _find_and_load_model(model_dir, init_key, model_type, matrix_r):
     """
     Look for  {model_dir}/init_{init_key}/checkpoints/{model_type}_best.pt
     and load it.  Returns the model in eval mode, or None if not found.
     """
     if model_dir is None:
         return None
-    ckpt = Path(model_dir) / f"init_{init_key}{noise}" / f"checkpoints{noise}" / f"{model_type}_best.pt"
+    ckpt = Path(model_dir) / f"init_{init_key}" / "checkpoints" / f"{model_type}_best.pt"
     if not ckpt.exists():
         print(f"  [model] no checkpoint: {ckpt}")
         return None
@@ -298,7 +300,7 @@ def _find_and_load_model(model_dir, init_key, model_type, matrix_r, noise):
 
 
 def visualise_results(dataset_samples, astra_r, matrix_r, matrix_r_full, n_la, res, n_angles, fname,
-                      model_dir=None, model_type="nsn", device="cuda", noise="0.0"):
+                      model_dir=None, model_type="nsn", device="cuda"):
     """
     Grid: one row per init method, columns show the reconstruction, its error
     against ground truth, and the error decomposed into range- and null-space
@@ -357,11 +359,11 @@ def visualise_results(dataset_samples, astra_r, matrix_r, matrix_r_full, n_la, r
             if init_key not in model_cache:
                 if "full" in init_key:
                     model_cache[init_key] = _find_and_load_model(
-                        model_dir, init_key, model_type, matrix_r_full, noise
+                        model_dir, init_key, model_type, matrix_r_full
                     )
                 else:
                     model_cache[init_key] = _find_and_load_model(
-                        model_dir, init_key, model_type, matrix_r, noise
+                        model_dir, init_key, model_type, matrix_r
                     )
 
         # ── Error decomposition helper ────────────────────────────────────────────
@@ -526,7 +528,7 @@ def visualise_results(dataset_samples, astra_r, matrix_r, matrix_r_full, n_la, r
     print(f"\nSaved → {fname}")
     plt.close(fig)
 def summarise_results(dataset_samples, matrix_r, matrix_r_full, n_la, res, n_angles,
-                      model_dir=None, model_type="nsn", device="cuda", noise="0.0",
+                      model_dir=None, model_type="nsn", device="cuda", label="",
                       out_path=None):
     """
     Aggregate error statistics over the *whole* dataset.
@@ -595,7 +597,7 @@ def summarise_results(dataset_samples, matrix_r, matrix_r_full, n_la, res, n_ang
             if init_key not in model_cache:
                 target = matrix_r_full if "full" in init_key else matrix_r
                 model_cache[init_key] = _find_and_load_model(
-                    model_dir, init_key, model_type, target, noise
+                    model_dir, init_key, model_type, target
                 )
             row_model = model_cache[init_key]
             if row_model is not None:
@@ -615,7 +617,7 @@ def summarise_results(dataset_samples, matrix_r, matrix_r_full, n_la, res, n_ang
 
     n = len(dataset_samples)
     emit("\n" + "=" * 78)
-    emit(f"Dataset error summary  |  noise={noise}  |  {n} samples  |  "
+    emit(f"Dataset error summary  |  {label}  |  {n} samples  |  "
          f"{res}x{res}, {n_angles} angles ({n_la} LA), model={model_type}")
     emit("=" * 78)
     emit(f"{'Method':<22}{'Stage':<7}{'':<10}{'total':>11}{'range':>11}{'null':>11}")
@@ -656,8 +658,7 @@ def _load_model(checkpoint_path, model_type, matrix_r, device):
 
 
 def load_dataset_samples(
-    data_root: str,
-    noise: str,
+    data_dir: str,
     n: int = 10,
     device=None,
     dtype=torch.float32,
@@ -666,7 +667,7 @@ def load_dataset_samples(
     n_test: int = 1000,
 ):
     """
-    Load pre-generated samples from create_ellipse_data.py output.
+    Load pre-generated samples from a create_ellipse_data.py output directory.
 
     Returns a list of dicts, each with:
         "gt"        – ground-truth image  (1,1,H,W)
@@ -675,15 +676,14 @@ def load_dataset_samples(
         "pinv"      – pseudoinverse init  (if folder exists)
         "pinv_full" – full pinv init      (if folder exists)
     """
-    root = Path(data_root)
-    suffix = noise
+    root = Path(data_dir)
 
-    gt_dir   = root / f"gt{suffix}"
-    sino_dir = root / f"sino{suffix}"
+    gt_dir   = root / "gt"
+    sino_dir = root / "sino"
     init_dirs = {
-        k: root / f"{k}{suffix}"
+        k: root / k
         for k in ("fbp", "pinv", "pinv_full")
-        if (root / f"{k}{suffix}").exists()
+        if (root / k).exists()
     }
 
     all_files = sorted(f.name for f in gt_dir.glob("*.npy"))
@@ -710,32 +710,39 @@ def load_dataset_samples(
                 ).unsqueeze(0).unsqueeze(0).to(dtype=dtype, device=device)
         samples.append(s)
 
-    print(f"  Loaded {len(samples)} samples from {root} (noise={noise}, split={split})")
+    print(f"  Loaded {len(samples)} samples from {root} (split={split})")
     return samples
 
 
 def main():
     args = parse_args()
 
-    if args.full:
-        res, n_angles, n_la = 128, 180, 120
-    else:
-        res, n_angles, n_la = args.res, args.n_angles, args.n_la
-    svd_thresh = args.svd_thresh
-
-    det_count = math.ceil(math.sqrt(2) * res)
-    angles    = np.linspace(0, np.pi, n_angles, endpoint=False)
-    phi_hi    = float(angles[n_la])    # first n_la angles form the LA window
-    phi       = (0.0, phi_hi)
+    DATA_DIR = Path(args.data_dir)
+    label = DATA_DIR.name  # e.g. "0.01" — used for output filenames / table headers
 
     device = torch.device(args.device if args.device
                           else ("cuda" if torch.cuda.is_available() else "cpu"))
     dtype = torch.float64
 
+    # ── Geometry from the data directory's summary.json ──────────────────────
+    summary_path = DATA_DIR / "summary.json"
+    with open(summary_path, "r") as f:
+        summary = json.load(f)
+
+    res        = int(summary["img_size"])
+    n_angles   = int(summary["num_angles"])
+    det_count  = int(summary["det_count"])
+    angles     = np.asarray(summary["angles"])
+    phi        = tuple(summary["phi"])
+    n_la       = int(((angles >= phi[0]) & (angles < phi[1])).sum())
+    svd_thresh = (args.svd_thresh if args.svd_thresh is not None
+                  else float(summary.get("svd_threshold", 4e-3)))
+
     print("=" * 60)
     print("Radon tests")
+    print("  data-dir   : %s" % DATA_DIR)
     print("  resolution : %dx%d" % (res, res))
-    print("  angles     : %d total, %d limited  phi=(0.0, %.4f)" % (n_angles, n_la, phi_hi))
+    print("  angles     : %d total, %d limited  phi=(%.4f, %.4f)" % (n_angles, n_la, phi[0], phi[1]))
     print("  det_count  : %d" % det_count)
     print("  svd_thresh : %s" % svd_thresh)
     print("  device     : %s" % device)
@@ -777,90 +784,83 @@ def main():
 
     vis_kwargs = dict(model_dir=args.model_dir, model_type=args.model_type)
 
-    for i in ("0.0","1.0", "2.0"):
-        print(f"Doing noise level {i}%")
-        # ── Load dataset samples (or fall back to synthetic phantoms) ─────────────
-        if args.data_root:
-            dsamples = load_dataset_samples(
-                args.data_root, noise=i, n=args.n_vis,
-                device=device, dtype=dtype,
-            )
-        else:
-            print(f"No data found, skipping noise level {i}%")
-            continue
-        # ── Math tests (use the first sample's GT — any image works) ─────────────
-        #print("\nRunning Radon operator tests ...")
-        #n_fail += run_tests(dsamples[0]["gt"].to(dtype=dtype, device=device),
-        #                    astra_r, matrix_r, svd_thresh)
+    # ── Load dataset samples from the directory ──────────────────────────────
+    dsamples = load_dataset_samples(
+        DATA_DIR, n=args.n_vis, device=device, dtype=dtype,
+    )
 
-        # ── Visualisations ────────────────────────────────────────────────────────
-        if args.data_root:
-            print(f"\nVisualising single sample (noise={i}) ...")
-            visualise_results(dsamples[:1], astra_r, matrix_r, matrix_r_full,
-                               n_la, res, n_angles,
-                               fname=f"radon_test_{i}.png", noise=i, **vis_kwargs)
-            visualise_results(dsamples[:1], astra_r, matrix_r, matrix_r_full,
-                               n_la, res, n_angles,
-                               fname=f"radon_test_{i}_resnet.png", noise=i,
-                               model_dir=args.model_dir, model_type="resnet")
+    # ── Math tests (use the first sample's GT — any image works) ─────────────
+    #print("\nRunning Radon operator tests ...")
+    #n_fail += run_tests(dsamples[0]["gt"].to(dtype=dtype, device=device),
+    #                    astra_r, matrix_r, svd_thresh)
 
-            print(f"\nVisualising all {len(dsamples)} samples (noise={i}) ...")
-            visualise_results(dsamples, astra_r, matrix_r, matrix_r_full,
-                               n_la, res, n_angles,
-                               fname=f"radon_test_dataset_{i}.png", noise=i, **vis_kwargs)
-            visualise_results(dsamples, astra_r, matrix_r, matrix_r_full,
-                               n_la, res, n_angles,
-                               fname=f"radon_test_dataset_{i}_resnet.png", noise=i,
-                               model_dir=args.model_dir, model_type="resnet")
+    # ── Visualisations ────────────────────────────────────────────────────────
+    print(f"\nVisualising single sample ({label}) ...")
+    visualise_results(dsamples[:1], astra_r, matrix_r, matrix_r_full,
+                       n_la, res, n_angles,
+                       fname=f"radon_test_{label}.png", **vis_kwargs)
+    visualise_results(dsamples[:1], astra_r, matrix_r, matrix_r_full,
+                       n_la, res, n_angles,
+                       fname=f"radon_test_{label}_resnet.png",
+                       model_dir=args.model_dir, model_type="resnet")
 
-            print(f"\nSummarising error statistics over {len(dsamples)} samples (noise={i}) ...")
-            summarise_results(dsamples, matrix_r, matrix_r_full,
-                              n_la, res, n_angles, noise=i,
-                              out_path=f"radon_summary_{i}_{args.model_type}.txt",
-                              **vis_kwargs)
-            summarise_results(dsamples, matrix_r, matrix_r_full,
-                              n_la, res, n_angles, noise=i,
-                              model_dir=args.model_dir, model_type="resnet",
-                              out_path=f"radon_summary_{i}_resnet.txt")
-        import matplotlib.pyplot as plt
+    print(f"\nVisualising all {len(dsamples)} samples ({label}) ...")
+    visualise_results(dsamples, astra_r, matrix_r, matrix_r_full,
+                       n_la, res, n_angles,
+                       fname=f"radon_test_dataset_{label}.png", **vis_kwargs)
+    visualise_results(dsamples, astra_r, matrix_r, matrix_r_full,
+                       n_la, res, n_angles,
+                       fname=f"radon_test_dataset_{label}_resnet.png",
+                       model_dir=args.model_dir, model_type="resnet")
 
-        s = matrix_r._s_k.cpu().numpy()
-        sf = matrix_r_full._s_k.cpu().numpy()
-        sla = matrix_r._s_k_la.cpu().numpy()
-        sfla = matrix_r_full._s_k_la.cpu().numpy()          # singular values of A_la, sorted descending
-        s_max = s[0]
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+    print(f"\nSummarising error statistics over {len(dsamples)} samples ({label}) ...")
+    summarise_results(dsamples, matrix_r, matrix_r_full,
+                      n_la, res, n_angles, label=label,
+                      out_path=f"radon_summary_{label}_{args.model_type}.txt",
+                      **vis_kwargs)
+    summarise_results(dsamples, matrix_r, matrix_r_full,
+                      n_la, res, n_angles, label=label,
+                      model_dir=args.model_dir, model_type="resnet",
+                      out_path=f"radon_summary_{label}_resnet.txt")
 
-        # Left: full spectrum
-        ax1.semilogy(s / s_max, label="full spectrum, A_threshold=%.1e" % svd_thresh)
-        ax1.semilogy(sf / s_max, label="full spectrum, A_full (threshold=1e-15)")
-        ax1.semilogy(sla / s_max, label="la spectrum, A_threshold=%.1e" % svd_thresh)
-        ax1.semilogy(sfla / s_max, label="la spectrum, A_full (threshold=1e-15)")
-        ax1.set_xlabel("Singular value index")
-        ax1.set_ylabel("s_k / s_max")
-        ax1.set_title("A_la singular value spectrum")
-        ax1.legend()
+    # ── SVD spectrum plot ─────────────────────────────────────────────────────
+    s = matrix_r._s_k.cpu().numpy()
+    sf = matrix_r_full._s_k.cpu().numpy()
+    sla = matrix_r._s_k_la.cpu().numpy()
+    sfla = matrix_r_full._s_k_la.cpu().numpy()          # singular values of A_la, sorted descending
+    s_max = s[0]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
 
-        # Right: how many dims in null space at each threshold
-        thresholds = np.logspace(-4, -1, 100)
-        null_dims = [(s < t * s_max).sum() for t in thresholds]
-        null_dimsf = [(sf < t * s_max).sum() for t in thresholds]
-        null_dimsla = [(sla < t * s_max).sum() for t in thresholds]
-        null_dimsfla = [(sfla < t * s_max).sum() for t in thresholds]
+    # Left: full spectrum
+    ax1.semilogy(s / s_max, label="full spectrum, A_threshold=%.1e" % svd_thresh)
+    ax1.semilogy(sf / s_max, label="full spectrum, A_full (threshold=1e-15)")
+    ax1.semilogy(sla / s_max, label="la spectrum, A_threshold=%.1e" % svd_thresh)
+    ax1.semilogy(sfla / s_max, label="la spectrum, A_full (threshold=1e-15)")
+    ax1.set_xlabel("Singular value index")
+    ax1.set_ylabel("s_k / s_max")
+    ax1.set_title("A_la singular value spectrum")
+    ax1.legend()
 
-        ax2.semilogx(thresholds, null_dims, label="full spectrum, A_threshold=%.1e" % svd_thresh)
-        ax2.semilogx(thresholds, null_dimsf, label="full spectrum, A_full (threshold=1e-15)")
-        ax2.semilogx(thresholds, null_dimsla, label="la spectrum, A_threshold=%.1e" % svd_thresh)
-        ax2.semilogx(thresholds, null_dimsfla, label="la spectrum, A_full (threshold=1e-15)")
-        ax2.axhline(16384 / 3, color='k', linestyle='--', label='Expected (1/3 of pixels)')
-        ax2.axvline(1e-3, color='r', linestyle='--', label='1e-3')
-        ax2.set_xlabel("SVD threshold")
-        ax2.set_ylabel("Null space dimension")
-        ax2.set_title("Null space size vs threshold")
-        ax2.legend()
+    # Right: how many dims in null space at each threshold
+    thresholds = np.logspace(-4, -1, 100)
+    null_dims = [(s < t * s_max).sum() for t in thresholds]
+    null_dimsf = [(sf < t * s_max).sum() for t in thresholds]
+    null_dimsla = [(sla < t * s_max).sum() for t in thresholds]
+    null_dimsfla = [(sfla < t * s_max).sum() for t in thresholds]
 
-        plt.tight_layout()
-        plt.savefig("svd_spectrum.png", dpi=150)
+    ax2.semilogx(thresholds, null_dims, label="full spectrum, A_threshold=%.1e" % svd_thresh)
+    ax2.semilogx(thresholds, null_dimsf, label="full spectrum, A_full (threshold=1e-15)")
+    ax2.semilogx(thresholds, null_dimsla, label="la spectrum, A_threshold=%.1e" % svd_thresh)
+    ax2.semilogx(thresholds, null_dimsfla, label="la spectrum, A_full (threshold=1e-15)")
+    ax2.axhline(res * res / 3, color='k', linestyle='--', label='Expected (1/3 of pixels)')
+    ax2.axvline(1e-3, color='r', linestyle='--', label='1e-3')
+    ax2.set_xlabel("SVD threshold")
+    ax2.set_ylabel("Null space dimension")
+    ax2.set_title("Null space size vs threshold")
+    ax2.legend()
+
+    plt.tight_layout()
+    plt.savefig("svd_spectrum.png", dpi=150)
 
     sys.exit(0 if n_fail == 0 else 1)
 
