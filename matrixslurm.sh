@@ -57,7 +57,7 @@ echo "Finished Data Generation at: $(date)"
 
 # ── Training (adapter chosen from summary.json matrix_mode) ──────────────────
 
-#python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR --models resnet,nsn --init fbp,pinv,pinv_full --noise_levels "0.0,1.0,2.0"
+python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR --models resnet,nsn --init fbp,pinv,pinv_full --noise_levels "0.0,1.0,2.0"
 
 echo "Finished Training at: $(date)"
 
