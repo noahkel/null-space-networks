@@ -133,7 +133,7 @@ def main():
     set_seed(0)
     print("Generating on device " + str(DEVICE))
     # output structure
-    OUT_DIR = OUT_DIR / NOISE_sigma_REL
+    OUT_DIR = OUT_DIR / str(NOISE_sigma_REL)
     ensure_dir(OUT_DIR)
     ensure_dir(OUT_DIR / f"gt{NOISE_sigma_REL}")
     ensure_dir(OUT_DIR / f"fbp{NOISE_sigma_REL}")
