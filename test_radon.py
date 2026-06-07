@@ -23,6 +23,7 @@ Tests
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 import numpy as np
@@ -258,6 +259,9 @@ def parse_args():
                    help="Model architecture to load (default: nsn)")
     p.add_argument("--n-vis", type=int, default=10,
                    help="Number of dataset samples to load for visualisation (default: 10)")
+    p.add_argument("--tag", type=str, default=os.environ.get("SLURM_JOB_ID", ""),
+                   help="Tag inserted into output filenames (default: $SLURM_JOB_ID). "
+                        "Use to keep outputs from different jobs separate.")
     return p.parse_args()
 
 def run_tests(x, astra_r, matrix_r, svd_thresh):
@@ -720,6 +724,8 @@ def main():
     DATA_DIR = Path(args.data_dir)
     MODEL_DIR = Path(args.model_dir)
     label = DATA_DIR.name  # e.g. "0.01" — used for output filenames / table headers
+    tag = args.tag.strip()
+    suffix = f"_job{tag}" if tag else ""  # appended to all output filenames
 
     device = torch.device(args.device if args.device
                           else ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -799,30 +805,30 @@ def main():
     print(f"\nVisualising single sample ({label}) ...")
     visualise_results(dsamples[:1], astra_r, matrix_r, matrix_r_full,
                        n_la, res, n_angles,
-                       fname=f"radon_test_{label}.png", **vis_kwargs)
+                       fname=f"radon_test_{label}{suffix}.png", **vis_kwargs)
     visualise_results(dsamples[:1], astra_r, matrix_r, matrix_r_full,
                        n_la, res, n_angles,
-                       fname=f"radon_test_{label}_resnet.png",
+                       fname=f"radon_test_{label}_resnet{suffix}.png",
                        model_dir=args.model_dir, model_type="resnet")
 
     print(f"\nVisualising all {len(dsamples)} samples ({label}) ...")
     visualise_results(dsamples, astra_r, matrix_r, matrix_r_full,
                        n_la, res, n_angles,
-                       fname=f"radon_test_dataset_{label}.png", **vis_kwargs)
+                       fname=f"radon_test_dataset_{label}{suffix}.png", **vis_kwargs)
     visualise_results(dsamples, astra_r, matrix_r, matrix_r_full,
                        n_la, res, n_angles,
-                       fname=f"radon_test_dataset_{label}_resnet.png",
+                       fname=f"radon_test_dataset_{label}_resnet{suffix}.png",
                        model_dir=args.model_dir, model_type="resnet")
 
     print(f"\nSummarising error statistics over {len(dsamples)} samples ({label}) ...")
     summarise_results(dsamples, matrix_r, matrix_r_full,
                       n_la, res, n_angles, label=label,
-                      out_path=f"radon_summary_{label}_{args.model_type}.txt",
+                      out_path=f"radon_summary_{label}_{args.model_type}{suffix}.txt",
                       **vis_kwargs)
     summarise_results(dsamples, matrix_r, matrix_r_full,
                       n_la, res, n_angles, label=label,
                       model_dir=args.model_dir, model_type="resnet",
-                      out_path=f"radon_summary_{label}_resnet.txt")
+                      out_path=f"radon_summary_{label}_resnet{suffix}.txt")
 
     # ── SVD spectrum plot ─────────────────────────────────────────────────────
     s = matrix_r._s_k.cpu().numpy()
@@ -861,7 +867,7 @@ def main():
     ax2.legend()
 
     plt.tight_layout()
-    plt.savefig("svd_spectrum.png", dpi=150)
+    plt.savefig(f"svd_spectrum{suffix}.png", dpi=150)
 
     sys.exit(0 if n_fail == 0 else 1)
 
