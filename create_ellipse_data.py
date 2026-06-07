@@ -196,7 +196,7 @@ def main():
     for i in range(N_SAMPLES):
 
         x_gt = torch.from_numpy(next(gen).data).to(DEVICE)
-        print(f"groundtruth: {torch.count_nonzero(x_gt)}")
+
         y = radon_full.forward_la(to_4d(x_gt))
         noise = radon_full.proj_ran(torch.randn_like(y))
         add_noise = NOISE_sigma_REL * y.abs().max() * noise / 100
@@ -295,17 +295,17 @@ def main():
         "noise_sigma_rel": float(NOISE_sigma_REL),
         "mean_norm_y": float(np.array(y_norms).mean()),
         "mean_norm_y_minus_y_delta": float(y_diff_norms.mean()),
-        "tv_alpha_grid": [float(a) for a in TV_ALPHA_GRID.tolist()],
-        "tv_alpha_errors_subset": alpha_errors,
-        "tv_best_alpha": None, # float(best_alpha), if TV loop is running!
-        "tv_iters_select": int(TV_ITERS_SELECT),
-        "tv_iters_final": int(TV_ITERS_FINAL),
-        "lw_iters": int(LW_ITERS),
-        "lw_omega": float(omega),
-        "lw_omega_factor": float(LW_OMEGA_FACTOR),
+        #"tv_alpha_grid": [float(a) for a in TV_ALPHA_GRID.tolist()],
+        #"tv_alpha_errors_subset": alpha_errors,
+        #"tv_best_alpha": None, # float(best_alpha), if TV loop is running!
+        #"tv_iters_select": int(TV_ITERS_SELECT),
+        #"tv_iters_final": int(TV_ITERS_FINAL),
+        #"lw_iters": int(LW_ITERS),
+        #"lw_omega": float(omega),
+        #"lw_omega_factor": float(LW_OMEGA_FACTOR),
         "operator_norm_A2": float(L),
         "matrix_mode": int(MATRIX_MODE),
-        "svd_threshold": SVD_THRESH
+        "svd_threshold": SVD_THRESH if MATRIX_MODE == 1 else None
     }
 
     with open(OUT_DIR / f"summary{NOISE_sigma_REL}.json", "w") as f:
