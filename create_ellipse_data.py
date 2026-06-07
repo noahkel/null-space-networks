@@ -135,13 +135,13 @@ def main():
     # output structure
     OUT_DIR = OUT_DIR / str(NOISE_sigma_REL)
     ensure_dir(OUT_DIR)
-    ensure_dir(OUT_DIR / f"gt{NOISE_sigma_REL}")
-    ensure_dir(OUT_DIR / f"fbp{NOISE_sigma_REL}")
+    ensure_dir(OUT_DIR / f"gt")
+    ensure_dir(OUT_DIR / f"fbp")
     #ensure_dir(OUT_DIR / "tv")
     #ensure_dir(OUT_DIR / "lw")
-    ensure_dir(OUT_DIR / f"sino{NOISE_sigma_REL}")
-    ensure_dir(OUT_DIR / f"pinv{NOISE_sigma_REL}")
-    ensure_dir(OUT_DIR / f"pinv_full{NOISE_sigma_REL}")
+    ensure_dir(OUT_DIR / f"sino")
+    ensure_dir(OUT_DIR / f"pinv")
+    ensure_dir(OUT_DIR / f"pinv_full")
 
     # dataset
     dataset = EllipsesDataset(image_size=IMG_SIZE)
