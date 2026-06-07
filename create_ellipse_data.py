@@ -199,7 +199,7 @@ def main():
 
         y = radon_full.forward_la(to_4d(x_gt))
         noise = radon_full.proj_ran(torch.randn_like(y))
-        add_noise = NOISE_sigma_REL * y.abs().max() * noise / 100
+        add_noise = NOISE_sigma_REL * (torch.linalg.norm(y) / torch.linalg.norm(noise)) * noise
         y_delta = y + add_noise
 
         y_norms.append(float(torch.linalg.norm(y.reshape(-1))))
@@ -223,8 +223,8 @@ def main():
 
     subset = samples[:TV_SUBSET]
 
-    print("Selecting TV alpha...")
-    alpha_errors = {}
+    #print("Selecting TV alpha...")
+    #alpha_errors = {}
 
     #for alpha in TV_ALPHA_GRID:
      #   errs = []
