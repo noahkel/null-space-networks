@@ -718,6 +718,7 @@ def main():
     args = parse_args()
 
     DATA_DIR = Path(args.data_dir)
+    MODEL_DIR = Path(args.model_dir)
     label = DATA_DIR.name  # e.g. "0.01" — used for output filenames / table headers
 
     device = torch.device(args.device if args.device
