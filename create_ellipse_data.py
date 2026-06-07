@@ -146,7 +146,7 @@ def main():
     # dataset
     dataset = EllipsesDataset(image_size=IMG_SIZE)
     gen = single_ellipse_generator(dataset, 'train') #dataset.generator('train')   #single_ellipse_generator(dataset, 'train')
-    gen = single_rectangle_generator(dataset, 'train')
+    #gen = single_rectangle_generator(dataset, 'train')
     # radon
     dx = 1.0
     angles = np.linspace(0, 180, NUM_ANGLES, endpoint=False) * np.pi / 180
