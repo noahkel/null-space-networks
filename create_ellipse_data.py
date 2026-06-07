@@ -133,6 +133,7 @@ def main():
     set_seed(0)
     print("Generating on device " + str(DEVICE))
     # output structure
+    OUT_DIR = OUT_DIR / NOISE_sigma_REL
     ensure_dir(OUT_DIR)
     ensure_dir(OUT_DIR / f"gt{NOISE_sigma_REL}")
     ensure_dir(OUT_DIR / f"fbp{NOISE_sigma_REL}")
@@ -209,17 +210,17 @@ def main():
 
         x_pinv = radon.backward_la(y_delta).squeeze()
         x_pinv_full = radon_full.backward_la(y_delta).squeeze()
-        np.save(OUT_DIR / f"gt{NOISE_sigma_REL}" / f"{i:05d}.npy", x_gt.detach().cpu().numpy())
-        np.save(OUT_DIR / f"fbp{NOISE_sigma_REL}" / f"{i:05d}.npy", x_fbp.detach().cpu().numpy())
-        np.save(OUT_DIR / f"pinv{NOISE_sigma_REL}" / f"{i:05d}.npy", x_pinv.detach().cpu().numpy())
-        np.save(OUT_DIR / f"pinv_full{NOISE_sigma_REL}" / f"{i:05d}.npy", x_pinv_full.detach().cpu().numpy())
-        np.save(OUT_DIR / f"sino{NOISE_sigma_REL}" / f"{i:05d}.npy", y_delta.squeeze().detach().cpu().numpy())
+        np.save(OUT_DIR / f"gt" / f"{i:05d}.npy", x_gt.detach().cpu().numpy())
+        np.save(OUT_DIR / f"fbp" / f"{i:05d}.npy", x_fbp.detach().cpu().numpy())
+        np.save(OUT_DIR / f"pinv" / f"{i:05d}.npy", x_pinv.detach().cpu().numpy())
+        np.save(OUT_DIR / f"pinv_full" / f"{i:05d}.npy", x_pinv_full.detach().cpu().numpy())
+        np.save(OUT_DIR / f"sino" / f"{i:05d}.npy", y_delta.squeeze().detach().cpu().numpy())
 
         samples.append((x_gt, y_delta))
 
     y_diff_norms = np.array(y_diff_norms)
 
-    np.save(OUT_DIR / f"y_diff_norms{NOISE_sigma_REL}.npy", y_diff_norms)
+    np.save(OUT_DIR / f"y_diff_norms.npy", y_diff_norms)
 
     subset = samples[:TV_SUBSET]
 
@@ -308,7 +309,7 @@ def main():
         "svd_threshold": SVD_THRESH if MATRIX_MODE == 1 else None
     }
 
-    with open(OUT_DIR / f"summary{NOISE_sigma_REL}.json", "w") as f:
+    with open(OUT_DIR / f"summary.json", "w") as f:
         json.dump(summary, f, indent=2)
 
     print("Done. Data saved to:", OUT_DIR.resolve())
