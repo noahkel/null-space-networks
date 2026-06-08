@@ -839,11 +839,12 @@ def main():
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
 
     # Left: full spectrum
-    ax1.semilogy(sla / s_max, "--", label="la spectrum, A_threshold=%.1e" % svd_thresh)
-    ax1.semilogy(s / s_max, "--", label="full spectrum, A_threshold=%.1e" % svd_thresh)
+
     ax1.semilogy(sf / s_max, label="full spectrum, A_full (threshold=1e-15)")
     ax1.semilogy(sfla / s_max, label="la spectrum, A_full (threshold=1e-15)")
-
+    ax1.semilogy(sla / s_max, "--", label="la spectrum, A_threshold=%.1e" % svd_thresh)
+    ax1.semilogy(s / s_max, "--", label="full spectrum, A_threshold=%.1e" % svd_thresh)
+    
     ax1.set_xlabel("Singular value index")
     ax1.set_ylabel("s_k / s_max")
     ax1.set_title("A_la singular value spectrum")
