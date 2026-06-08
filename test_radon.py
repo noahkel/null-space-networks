@@ -839,10 +839,11 @@ def main():
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
 
     # Left: full spectrum
-    ax1.semilogy(s / s_max, label="full spectrum, A_threshold=%.1e" % svd_thresh)
+    ax1.semilogy(sla / s_max, "--", label="la spectrum, A_threshold=%.1e" % svd_thresh)
+    ax1.semilogy(s / s_max, "--", label="full spectrum, A_threshold=%.1e" % svd_thresh)
     ax1.semilogy(sf / s_max, label="full spectrum, A_full (threshold=1e-15)")
-    ax1.semilogy(sla / s_max, label="la spectrum, A_threshold=%.1e" % svd_thresh)
     ax1.semilogy(sfla / s_max, label="la spectrum, A_full (threshold=1e-15)")
+
     ax1.set_xlabel("Singular value index")
     ax1.set_ylabel("s_k / s_max")
     ax1.set_title("A_la singular value spectrum")
@@ -859,8 +860,6 @@ def main():
     ax2.semilogx(thresholds, null_dimsf, label="full spectrum, A_full (threshold=1e-15)")
     ax2.semilogx(thresholds, null_dimsla, label="la spectrum, A_threshold=%.1e" % svd_thresh)
     ax2.semilogx(thresholds, null_dimsfla, label="la spectrum, A_full (threshold=1e-15)")
-    ax2.axhline(res * res / 3, color='k', linestyle='--', label='Expected (1/3 of pixels)')
-    ax2.axvline(1e-3, color='r', linestyle='--', label='1e-3')
     ax2.set_xlabel("SVD threshold")
     ax2.set_ylabel("Null space dimension")
     ax2.set_title("Null space size vs threshold")
