@@ -361,14 +361,9 @@ def visualise_results(dataset_samples, astra_r, matrix_r, matrix_r_full, n_la, r
         model_cache: dict = {}
         for _, init_key, _ in init_tensors:
             if init_key not in model_cache:
-                if "full" in init_key:
-                    model_cache[init_key] = _find_and_load_model(
-                        model_dir, init_key, model_type, matrix_r_full
-                    )
-                else:
-                    model_cache[init_key] = _find_and_load_model(
-                        model_dir, init_key, model_type, matrix_r
-                    )
+                model_cache[init_key] = _find_and_load_model(
+                    model_dir, init_key, model_type, matrix_r
+                )
 
         # ── Error decomposition helper ────────────────────────────────────────────
         def decomp(recon_t, radon):
@@ -399,10 +394,7 @@ def visualise_results(dataset_samples, astra_r, matrix_r, matrix_r_full, n_la, r
                 row_model.eval()
                 with torch.no_grad():
                     out = row_model(recon_t.float().to(device), sino_m_la[-1].float().to(device))
-                if "full" in init_key:
-                    model_data = decomp(out.to(dtype=matrix_r.dtype), matrix_r_full)
-                else:
-                    model_data = decomp(out.to(dtype=matrix_r.dtype), matrix_r)
+                model_data = decomp(out.to(dtype=matrix_r.dtype), matrix_r)
 
             rows.append((name, init_data, model_data))
 
@@ -599,7 +591,7 @@ def summarise_results(dataset_samples, matrix_r, matrix_r_full, n_la, res, n_ang
 
             # Model output (if a checkpoint exists for this init).
             if init_key not in model_cache:
-                target = matrix_r_full if "full" in init_key else matrix_r
+                target = matrix_r
                 model_cache[init_key] = _find_and_load_model(
                     model_dir, init_key, model_type, target
                 )
