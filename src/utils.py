@@ -5,14 +5,12 @@ from src.unet import UNet
 from src.wrappers import RESNET, NSN, DPNSN, DPNSN_RES
 from typing import List, Union, Dict
 from src.radon import _RadonBase
-from src.radon_matrix import MatrixRadonAdapter
 
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import math
 from torch.utils.data import DataLoader
 try:
-    from skimage.metrics import peak_signal_noise_ratio as sk_psnr
     from skimage.metrics import structural_similarity as sk_ssim
     _HAS_SKIMAGE = True
 except Exception:
@@ -37,7 +35,7 @@ def save_example_outputs(
     gt_np = x_gt[0, 0].detach().cpu().numpy()
     init_np = x_init[0, 0].detach().cpu().numpy()
     pred_np = pred[0, 0].detach().cpu().numpy()
-    
+
     fig, axes = plt.subplots(1, 3, figsize=(12, 4))
 
     im0 = axes[0].imshow(gt_np, cmap="gray")
@@ -117,7 +115,7 @@ def create_simple_phantom(size: int, device="cpu"):
 
     # rectangle
     img[(xx > -0.7) & (xx < -0.3) & (yy > -0.2) & (yy < 0.4)] = 0.7
-    
+
     return img
 
 def set_seed(seed: int) -> None:
@@ -148,7 +146,7 @@ def save_image_with_colorbar(img2d: np.ndarray, out_png: Path, title: str) -> No
     plt.tight_layout()
     plt.savefig(out_png, dpi=150)
     plt.close()
-    
+
 def visualise_example(
     gt: np.ndarray,
     sino: np.ndarray,
@@ -179,7 +177,7 @@ def visualise_example(
     axes[0].axis("off")
     plt.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
 
-    im1 = axes[1].imshow(sino, cmap="gray", aspect="auto")
+    axes[1].imshow(sino, cmap="gray", aspect="auto")
     axes[1].set_title("Sinogram (limited angle)")
     axes[1].set_xlabel("Detector")
     axes[1].set_ylabel("Angle index")

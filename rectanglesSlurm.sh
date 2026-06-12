@@ -56,15 +56,18 @@ echo "Finished Data Generation at: $(date)"
 
 # ── Training (adapter chosen from summary.json matrix_mode) ──────────────────
 
-python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR_NOISE --models resnet,nsn
+python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR_NOISE --models resnet,nsn,dpnsn,dpnsn_res
 
 echo "Finished Training at: $(date)"
 
 # ── Adversarial Attacks ───────────────────────────────────────────────────────
+# NOTE: --data-root must point at the noise subfolder ($DATA_DIR_NOISE), matching
+# train.py's --data_dir. attack.py expects plain inner names (gt/, sino/, summary.json)
+# and checkpoints under $MODEL_DIR/init_<init>/checkpoints/.
 
-#python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR --model-dir $MODEL_DIR --models resnet,nsn --init pinv --attacks adam --norm l2
+#python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models resnet,nsn,dpnsn,dpnsn_res --init pinv --attacks adam --norm l2
 
-#python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR --model-dir $MODEL_DIR --models resnet,nsn --init fbp --attacks adam --norm l2
+#python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models resnet,nsn,dpnsn,dpnsn_res --init fbp --attacks adam --norm l2
 
 echo "Finished Adversarial Attack at: $(date)"
 

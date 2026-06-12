@@ -251,7 +251,7 @@ def plot_example_grid(records, out_path: Path, attack="adam", norm="l2", eps=1, 
         if r["attack"] == attack and r["norm"] == norm and r["eps"] == eps
     ]
     if not recs:
-        print(f"[example_grid] no records, skipping")
+        print("[example_grid] no records, skipping")
         return
 
     recs = sorted(recs, key=lambda r: (r["init"], r["model"]))
@@ -267,7 +267,7 @@ def plot_example_grid(records, out_path: Path, attack="adam", norm="l2", eps=1, 
         loaded.append((r, img))
 
     if not loaded:
-        print(f"[example_grid] no example images found, skipping")
+        print("[example_grid] no example images found, skipping")
         return
 
     n = len(loaded)
@@ -326,7 +326,7 @@ def plot_mse_ratio_distribution(records, out_path: Path, attack="adam", norm="l2
             all_data.append((r, ratios))
 
     if not all_data:
-        print(f"[mse_ratio_dist] no per-sample CSVs found, skipping")
+        print("[mse_ratio_dist] no per-sample CSVs found, skipping")
         return
 
     labels = []

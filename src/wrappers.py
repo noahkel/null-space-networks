@@ -1,7 +1,6 @@
 import torch.nn as nn
 from src.radon import _RadonBase
 import torch
-from src.total_variation import tv_cp
 
 
 class RESNET(nn.Module):

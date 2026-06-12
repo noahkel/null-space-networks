@@ -514,10 +514,13 @@ def load_model_checkpoint(
         Path(f"runs_{example}") / f"init_{init_method}{noise}" / f"checkpoints{noise}" / f"{model_name}_best.pt",
         Path(f"checkpoints{noise}") / f"{model_name}_best.pt",
     ]
-    print(f"Model path and checkpoint path: {candidates} and  {model_dir}")
     ckpt_path = next((p for p in candidates if p.exists()), None)
     if ckpt_path is None:
-        raise FileNotFoundError(f"No checkpoint found for model '{model_name}' and init '{init_method}'")
+        searched = "\n  ".join(str(p) for p in candidates)
+        raise FileNotFoundError(
+            f"No checkpoint found for model '{model_name}' and init '{init_method}'. "
+            f"Searched:\n  {searched}"
+        )
 
     model = build_models([model_name], radon=radon, beta=beta)[model_name].to(device)
     ckpt = torch.load(ckpt_path, map_location=device)
@@ -692,7 +695,6 @@ def save_examples(
             plt.tight_layout()
             plt.savefig(out_dir / f"range_diff_{idx:03d}.png", dpi=150)
             plt.close(fig)
-    print("finished save")
 
 def save_scatter_plot(
     out_dir: Path,
@@ -885,7 +887,13 @@ def main() -> None:
     example = args.type
     init_method = args.init.lower()
 
-    for i in ("0.0",):
+    # Noise-level suffix appended to data/checkpoint names. create_ellipse_data.py
+    # writes each noise level into its own subfolder (e.g. <data_root>/0.0) using
+    # plain inner names (gt/, sino/, summary.json), and train.py saves checkpoints
+    # under <model_dir>/init_<init>/checkpoints/. We therefore use an empty suffix
+    # and expect --data-root to point at the noise subfolder, exactly like train.py's
+    # --data_dir. To sweep several noise levels, run once per subfolder.
+    for i in ("",):
         summary = load_summary(example, i, data_root=args.data_root)
         beta = float(summary["mean_norm_y_minus_y_delta"])
         radon = build_radon(summary, device=device)
@@ -955,7 +963,6 @@ def main() -> None:
                     sample_count += x_gt.shape[0]
                     if sample_count >= args.max_samples:
                         break
-            print(attack_names)
             for attack_name in attack_names:
                 result_dir = out_root / model_name / attack_name / f"{args.norm}_eps_{args.eps:g}"
                 result_dir.mkdir(parents=True, exist_ok=True)
@@ -966,7 +973,6 @@ def main() -> None:
                 processed = 0
 
                 for x_gt, clean_init, y_clean, clean_pred in clean_rows_cache:
-                    print(f"Processed {processed} samples")
                     if processed >= args.max_samples:
                         break
 
@@ -1061,10 +1067,14 @@ def main() -> None:
                     f"success_rel_l2={summary_metrics.get('success_rel_l2_mean', float('nan')):.3f} "
                     f"clean_rel_l2={summary_metrics.get('clean_rel_l2_mean', float('nan')):.3f}"
                 )
-                for attack_name, rows_by_model in scatter_rows.items():
-                    scatter_dir = out_root / attack_name
-                    scatter_dir.mkdir(parents=True, exist_ok=True)
-                    save_scatter_plot(scatter_dir, rows_by_model)
+
+        # After every model and attack for this noise level, write one scatter plot
+        # per attack comparing each model's clean-vs-adversarial per-sample error.
+        for att_name, rows_by_model in scatter_rows.items():
+            scatter_dir = out_root / att_name
+            scatter_dir.mkdir(parents=True, exist_ok=True)
+            save_scatter_plot(scatter_dir, rows_by_model)
+
 
 if __name__ == "__main__":
     main()

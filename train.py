@@ -4,7 +4,6 @@ import json
 import numpy as np
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 import argparse
 from src.radon import AstraRadonAdapter
@@ -55,7 +54,6 @@ def eval_one_epoch(
         pred = model(x_init, y_delta)
         loss = mse_loss(pred, x_gt)
 
-
         running += float(loss.item()) * x_gt.shape[0]
         n += x_gt.shape[0]
 
@@ -71,7 +69,6 @@ def detect_init_methods(data_dir: Path) -> List[str]:
 
 def main(example, out_dir, data_dir, models):
     set_seed(42)
-
 
     DATA_ROOT = data_dir
     OUT_DIR = out_dir
@@ -120,11 +117,8 @@ def main(example, out_dir, data_dir, models):
     # -------------------------
     # Build radon geometry
     # -------------------------
-    # angles = np.linspace(-np.pi/3, np.pi/3, NUM_ANGLES, endpoint=False).astype(np.float32)
     angles = np.asarray(ANGLES)
-    # print(angles)
     phi = tuple(PHI)
-    # print(phi)
     if MATRIX_MODE == 1:
         radon = MatrixRadonAdapter(
             resolution=IMG_SIZE,
@@ -181,31 +175,6 @@ def main(example, out_dir, data_dir, models):
                 noise=""
             )
         else:
-            '''
-            train_loader = get_lodopab_dataloader(
-                init_recon=init,
-                batch_size=BATCH_SIZE,
-                split="train",
-                n_train=n_train,
-                n_test=n_test,
-                data_root=DATA_ROOT,
-                shuffle=True,
-                num_workers=NUM_WORKERS,
-                device=None,
-            )
-
-            val_loader = get_lodopab_dataloader(
-                init_recon=init,
-                batch_size=BATCH_SIZE,
-                split="test",
-                n_train=n_train,
-                n_test=n_test,
-                data_root=DATA_ROOT,
-                shuffle=False,
-                num_workers=NUM_WORKERS,
-                device=None,
-            )
-            '''
             raise NotImplementedError("Lodopab not implemented yet")
 
         models = build_models(MODELS_TO_TRAIN, radon=radon, beta=BETA)
@@ -271,6 +240,3 @@ if __name__ == "__main__":
     type = args.type
     main(example=type, out_dir=out_dir, data_dir=data_dir, models=model_names)
     print("Finished.")
-
-# sbatch -p a6000 -w mp-gpu4-a6000-2 --job-name=train -o logs/train.txt --time=30-00:00:00 --wrap="python -u main.py"
-
