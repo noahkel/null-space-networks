@@ -3,10 +3,11 @@ This project investigates the robustness of Null Space Networks (NSNs) for CT im
 
 ## Scripts
 
-**`create_ellipse_data.py`** — Generates the training/test dataset of ellipse phantoms. Simulates CT measurements by applying the Radon transform to ground-truth images, adding relative noise to the sinograms, and saving the ground-truth, FBP, sinogram, TV, and Landweber reconstructions to disk.
+**`create_ellipse_data.py` / `create_rectangle_data.py`** — Generate the training/test dataset of ellipse or rectangle phantoms (thin wrappers around the shared pipeline in `create_phantom_data.py`). Simulates CT measurements by applying the Radon transform to ground-truth images, adding relative noise to the sinograms, and saving the ground-truth, FBP, pinv, pinv_full, and sinogram data to disk.
 
 ```bash
 python -u create_ellipse_data.py --img_size 128 --noise 0.05 --min_angle 0 --max_angle 90 --num_thetas 180 --n_samples 1000 --matrix_mode 1
+python -u create_rectangle_data.py --img_size 128 --noise 0.05 --min_angle 0 --max_angle 90 --num_thetas 180 --n_samples 1000 --matrix_mode 1
 ```
 
 **`train.py`** — Trains each of the four models (ResNet, NSN, DPNSN, DPNSN_RES) on the generated dataset, minimizing MSE against ground-truth reconstructions and saving model checkpoints.
