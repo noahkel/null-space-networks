@@ -65,13 +65,11 @@ echo "Finished Training at: $(date)"
 # train.py's --data_dir. attack.py expects plain inner names (gt/, sino/, summary.json)
 # and checkpoints under $MODEL_DIR/init_<init>/checkpoints/.
 
-#python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models resnet,nsn,dpnsn,dpnsn_res --init pinv --attacks adam --norm l2
-
-#python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models resnet,nsn,dpnsn,dpnsn_res --init fbp --attacks adam --norm l2
+python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models resnet,nsn,dpnsn,dpnsn_res --init pinv --attacks adam --norm l2
 
 echo "Finished Adversarial Attack at: $(date)"
 
-python -u test_radon.py --data-dir $DATA_DIR_NOISE --model-dir $MODEL_DIR --tag "rectangles"
+#python -u test_radon.py --data-dir $DATA_DIR_NOISE --model-dir $MODEL_DIR --tag "rectangles"
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 
