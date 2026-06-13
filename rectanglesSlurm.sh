@@ -65,8 +65,12 @@ echo "Finished Training at: $(date)"
 # train.py's --data_dir. attack.py expects plain inner names (gt/, sino/, summary.json)
 # and checkpoints under $MODEL_DIR/init_<init>/checkpoints/.
 
-python -u attack.py --type $TYPE --eps 1.0 --alpha 0.5 --steps 40 --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models resnet,nsn,dpnsn,dpnsn_res --init pinv --attacks adam --norm l2
+# Sweep several attack budgets (fractions of mean ||y|| for zero-noise data) so the
+# robustness curve shows where each model breaks, not just the saturated eps=1.0 point.
+# --tag keeps rectangles results out of the ellipses output folder (both use --type ellipses).
+EPS="0.005,0.01,0.02,0.05,0.1,0.2,0.5,1.0"
 
+python -u attack.py --type $TYPE --eps $EPS --alpha 0.5 --steps 40 --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models resnet,nsn,dpnsn,dpnsn_res --init pinv --attacks adam --norm l2 --tag rectangles
 echo "Finished Adversarial Attack at: $(date)"
 
 #python -u test_radon.py --data-dir $DATA_DIR_NOISE --model-dir $MODEL_DIR --tag "rectangles"

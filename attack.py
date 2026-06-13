@@ -27,6 +27,10 @@ def parse_list_arg(value: str) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def parse_float_list(value: str) -> List[float]:
+    return [float(item.strip()) for item in str(value).split(",") if item.strip()]
+
+
 def l2_norm_batch(x: torch.Tensor) -> torch.Tensor:
     return torch.linalg.norm(x.reshape(x.shape[0], -1), dim=1)
 
@@ -571,6 +575,8 @@ def evaluate_batch(
 
         clean_mse = float(clean_mse_batch[i].item())
         adv_mse = float(adv_mse_batch[i].item())
+        clean_sino_l2 = float(np.linalg.norm(clean_y_np.reshape(-1)))
+        delta_l2_i = float(delta_l2_batch[i].item())
 
         row: Dict[str, float] = {
             "gt_norm": float(np.linalg.norm(gt_np.ravel())),
@@ -586,10 +592,11 @@ def evaluate_batch(
             "adv_ssim": ssim(adv_pred_np, gt_np),
             "pred_shift_rel_l2": pred_shift,
             "init_shift_rel_l2": init_shift,
-            "delta_l2": float(delta_l2_batch[i].item()),
+            "delta_l2": delta_l2_i,
             "delta_linf": float(delta_linf_batch[i].item()),
             "delta_mean_abs": float(sino_shift_batch[i].item()),
-            "clean_sino_l2": float(np.linalg.norm(clean_y_np.reshape(-1))),
+            "delta_rel_l2": delta_l2_i / max(clean_sino_l2, 1e-12),
+            "clean_sino_l2": clean_sino_l2,
             "adv_sino_l2": float(np.linalg.norm(adv_y_np.reshape(-1))),
             "success_rel_l2": float(adv_rel_l2 >= success_rel_l2_factor * max(clean_rel_l2, 1e-12)),
             "success_mse": float(adv_mse >= success_mse_factor * max(clean_mse, 1e-12)),
@@ -699,9 +706,13 @@ def save_examples(
 def save_scatter_plot(
     out_dir: Path,
     rows_by_model: Dict[str, List[Dict]],
-    x_key: str = "clean_rel_l2",
+    x_key: str = "delta_rel_l2",
     y_key: str = "adv_rel_l2",
 ) -> None:
+    """Per-sample sensitivity cloud: adversarial error vs the *relative* perturbation
+    size (‖delta‖/‖y‖). Plotting against clean error collapses every point onto the
+    y-axis because clean error ~ 0; plotting against perturbation size spreads the
+    points across the sweep and reveals how steeply each model degrades."""
     if not rows_by_model:
         return
     fig, ax = plt.subplots(figsize=(7, 6))
@@ -710,16 +721,93 @@ def save_scatter_plot(
         xs = [r[x_key] for r in rows if x_key in r and y_key in r]
         ys = [r[y_key] for r in rows if x_key in r and y_key in r]
         if xs:
-            ax.scatter(xs, ys, label=model_name, s=20, alpha=0.7, color=colors[i % len(colors)])
-    lim_lo = min(ax.get_xlim()[0], ax.get_ylim()[0])
-    lim_hi = max(ax.get_xlim()[1], ax.get_ylim()[1])
-    ax.plot([lim_lo, lim_hi], [lim_lo, lim_hi], "k--", lw=1, alpha=0.5, label="y = x")
-    ax.set_xlabel(f"Clean error ({x_key})")
+            ax.scatter(xs, ys, label=model_name, s=20, alpha=0.6, color=colors[i % len(colors)])
+    if x_key == "delta_rel_l2":
+        ax.set_xlabel("Relative perturbation  ‖delta‖ / ‖y‖")
+    else:
+        ax.set_xlabel(f"Clean error ({x_key})")
     ax.set_ylabel(f"Adv error ({y_key})")
-    ax.set_title("Clean vs Adversarial Error per Sample & Network")
+    ax.set_title("Per-sample sensitivity: adversarial error vs perturbation size")
+    ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8)
     plt.tight_layout()
-    plt.savefig(out_dir / "scatter_clean_vs_adv.png", dpi=150)
+    plt.savefig(out_dir / "scatter_perturbation_vs_adv.png", dpi=150)
+    plt.close(fig)
+
+
+def save_robustness_curve(
+    out_dir: Path,
+    curve_by_model: Dict[str, List[Dict]],
+    y_key: str = "adv_rel_l2",
+) -> None:
+    """Plot mean y_key (± 95% CI) against the nominal attack budget eps, one line per
+    model. This is the key view a single-eps run cannot give: it shows the perturbation
+    size at which each model's reconstruction actually breaks."""
+    if not curve_by_model:
+        return
+    mean_key, ci_key = f"{y_key}_mean", f"{y_key}_ci95"
+    fig, ax = plt.subplots(figsize=(7, 5))
+    colors = plt.cm.tab10.colors
+    xs: List[float] = []
+    plotted = False
+    for i, (model_name, points) in enumerate(curve_by_model.items()):
+        pts = sorted((p for p in points if mean_key in p), key=lambda p: p["eps"])
+        if not pts:
+            continue
+        xs = [p["eps"] for p in pts]
+        ys = [p[mean_key] for p in pts]
+        es = [p.get(ci_key, 0.0) for p in pts]
+        ax.errorbar(xs, ys, yerr=es, marker="o", capsize=3, lw=1.5,
+                    label=model_name, color=colors[i % len(colors)])
+        plotted = True
+    if not plotted:
+        plt.close(fig)
+        return
+    if len(xs) > 1 and min(xs) > 0:
+        ax.set_xscale("log")
+    ax.set_xlabel("Attack budget eps  (fraction of ‖y‖)")
+    ax.set_ylabel(f"{y_key}  (mean ± 95% CI)")
+    ax.set_title("Robustness curve: reconstruction error vs attack budget")
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(fontsize=8)
+    plt.tight_layout()
+    plt.savefig(out_dir / f"robustness_{y_key}.png", dpi=150)
+    plt.close(fig)
+
+
+def save_decomposition_bar(
+    out_dir: Path,
+    rows_by_model: Dict[str, List[Dict]],
+) -> None:
+    """Grouped bar chart of the null-space fraction of the error (‖e_nul‖/‖e‖), clean
+    vs adversarial, per model. Shows that the attack pushes error out of the null space
+    and into the (data-consistent) range space that the NSN passes through unchanged."""
+    models = [m for m in rows_by_model if rows_by_model[m]]
+    if not models:
+        return
+
+    def mean_of(rows: List[Dict], key: str) -> float:
+        vals = [r[key] for r in rows if key in r]
+        return float(np.mean(vals)) if vals else float("nan")
+
+    clean_nul = [mean_of(rows_by_model[m], "clean_e_nul_frac") for m in models]
+    adv_nul = [mean_of(rows_by_model[m], "adv_e_nul_frac") for m in models]
+    if all(math.isnan(v) for v in clean_nul + adv_nul):
+        return
+
+    x = np.arange(len(models))
+    w = 0.38
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.bar(x - w / 2, clean_nul, w, label="clean", color="#1D9E75")
+    ax.bar(x + w / 2, adv_nul, w, label="adversarial", color="#D4537E")
+    ax.set_xticks(x)
+    ax.set_xticklabels(models)
+    ax.set_ylabel("‖e_nul‖ / ‖e‖")
+    ax.set_ylim(0, 1.05)
+    ax.set_title("Null-space fraction of error: clean vs adversarial")
+    ax.legend(fontsize=8)
+    plt.tight_layout()
+    plt.savefig(out_dir / "decomp_nul_frac.png", dpi=150)
     plt.close(fig)
 def summarize_metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
     metrics: Dict[str, float] = {"num_examples": len(rows)}
@@ -743,6 +831,7 @@ def summarize_metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
         "delta_l2",
         "delta_linf",
         "delta_mean_abs",
+        "delta_rel_l2",
         "success_rel_l2",
         "success_mse",
     ]
@@ -847,10 +936,12 @@ def main() -> None:
     parser.add_argument("--models", default="resnet,nsn,dpnsn,dpnsn_res")
     parser.add_argument("--attacks", default="pgd,fgsm,spsa")
     parser.add_argument("--norm", default="l2", choices=["l2", "linf"])
-    parser.add_argument("--eps", type=float, default=1.0,
-                        help="Attack budget multiplier. For noisy data: eps_actual = eps * beta "
-                             "(noise norm). For zero-noise data: eps_actual = eps * mean_norm_y "
-                             "(sinogram norm), so eps=0.02 gives ~2%% perturbation.")
+    parser.add_argument("--eps", type=str, default="1.0",
+                        help="Attack budget multiplier(s). Comma-separated for a sweep, e.g. "
+                             "'0.01,0.05,0.1', which draws a robustness curve. For noisy data: "
+                             "eps_actual = eps * beta (noise norm). For zero-noise data: "
+                             "eps_actual = eps * mean_norm_y (sinogram norm), so eps=0.02 gives "
+                             "~2%% perturbation.")
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--steps", type=int, default=40)
     parser.add_argument("--restarts", type=int, default=3)
@@ -877,6 +968,10 @@ def main() -> None:
     parser.add_argument("--adam-consistency-weight", type=float, default=0.0)
     parser.add_argument("--save-examples", type=int, default=6)
     parser.add_argument("--out-dir", default=None)
+    parser.add_argument("--tag", default=None,
+                        help="Label for the output directory (default: --type). Use to separate "
+                             "datasets that share a --type loader, e.g. rectangles vs ellipses, so "
+                             "their results do not overwrite each other.")
     parser.add_argument("--data-root", default=None, help="Path to {example}_out data directory (default: ./{type}_out)")
     parser.add_argument("--model-dir", default=None, help="Base dir containing runs_{type}/ checkpoints (default: .)")
     args = parser.parse_args()
@@ -893,17 +988,18 @@ def main() -> None:
     # under <model_dir>/init_<init>/checkpoints/. We therefore use an empty suffix
     # and expect --data-root to point at the noise subfolder, exactly like train.py's
     # --data_dir. To sweep several noise levels, run once per subfolder.
+    eps_list = parse_float_list(args.eps)
     for i in ("",):
         summary = load_summary(example, i, data_root=args.data_root)
         beta = float(summary["mean_norm_y_minus_y_delta"])
         radon = build_radon(summary, device=device)
         # For zero-noise data beta==0, so scale by sinogram norm instead.
-        # args.eps is then interpreted as a fraction of mean ||y||.
+        # Each eps in eps_list is then interpreted as a fraction of mean ||y||.
         if beta > 0:
-            eps = args.eps * beta
+            eps_scale = beta
         else:
             mean_sino_norm = float(summary.get("mean_norm_y") or 0.0)
-            eps = args.eps * mean_sino_norm if mean_sino_norm > 0 else args.eps
+            eps_scale = mean_sino_norm if mean_sino_norm > 0 else 1.0
         loader = get_loader(
             example=example,
             init_method=init_method,
@@ -921,15 +1017,23 @@ def main() -> None:
 
         attack_names = parse_list_arg(args.attacks)
         model_names = parse_list_arg(args.models)
-        out_root = Path(args.out_dir) if args.out_dir else Path(f"attack_runs_{example}{i}") / f"init_{init_method}{i}"
+        tag = args.tag or example
+        out_root = Path(args.out_dir) if args.out_dir else Path(f"attack_runs_{tag}{i}") / f"init_{init_method}{i}"
         out_root.mkdir(parents=True, exist_ok=True)
 
         config = vars(args).copy()
         config["device"] = str(device)
+        config["eps_list"] = eps_list
         config["summary_path"] = str(Path(f"{example}{i}_out") / f"summary{i}.json")
         with open(out_root / "config.json", "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
-        scatter_rows: Dict[str, Dict[str, List[Dict]]] = defaultdict(dict)
+        # Collections for the cross-run plots written after every model/attack/eps:
+        #   scatter_all[attack][model]         -> per-sample rows pooled over all eps
+        #   decomp_by_eps[(attack, eps)][model] -> per-sample rows for a single eps
+        #   curve_rows[attack][model]          -> one summary dict per eps (robustness curve)
+        scatter_all: Dict[str, Dict[str, List[Dict]]] = defaultdict(lambda: defaultdict(list))
+        decomp_by_eps: Dict[Tuple[str, float], Dict[str, List[Dict]]] = defaultdict(dict)
+        curve_rows: Dict[str, Dict[str, List[Dict]]] = defaultdict(lambda: defaultdict(list))
 
         for model_name in model_names:
             print("loading " + model_name)
@@ -964,116 +1068,128 @@ def main() -> None:
                     if sample_count >= args.max_samples:
                         break
             for attack_name in attack_names:
-                result_dir = out_root / model_name / attack_name / f"{args.norm}_eps_{args.eps:g}"
-                result_dir.mkdir(parents=True, exist_ok=True)
+                for eps_nominal in eps_list:
+                    eps_actual = eps_nominal * eps_scale
+                    result_dir = out_root / model_name / attack_name / f"{args.norm}_eps_{eps_nominal:g}"
+                    result_dir.mkdir(parents=True, exist_ok=True)
 
-                rows: List[Dict[str, float]] = []
-                example_rows: List[Dict] = []
-                total_runtime = 0.0
-                processed = 0
+                    rows: List[Dict[str, float]] = []
+                    example_rows: List[Dict] = []
+                    total_runtime = 0.0
+                    processed = 0
 
-                for x_gt, clean_init, y_clean, clean_pred in clean_rows_cache:
-                    if processed >= args.max_samples:
-                        break
+                    for x_gt, clean_init, y_clean, clean_pred in clean_rows_cache:
+                        if processed >= args.max_samples:
+                            break
 
-                    attack_result = run_attack(
-                        attack_name=attack_name,
-                        adapter=adapter,
-                        x_gt=x_gt,
-                        y_clean=y_clean,
-                        clean_pred=clean_pred,
-                        args=args,
-                        eps=eps,
+                        attack_result = run_attack(
+                            attack_name=attack_name,
+                            adapter=adapter,
+                            x_gt=x_gt,
+                            y_clean=y_clean,
+                            clean_pred=clean_pred,
+                            args=args,
+                            eps=eps_actual,
+                        )
+                        total_runtime += attack_result.runtime_sec
+
+                        with torch.no_grad():
+                            adv_pred, adv_init, y_adv = adapter.forward(attack_result.y_adv, mode=args.eval_init_mode)
+
+                        batch_rows = evaluate_batch(
+                            x_gt=x_gt,
+                            clean_init=clean_init,
+                            clean_y=y_clean,
+                            clean_pred=clean_pred,
+                            adv_init=adv_init,
+                            adv_y=y_adv,
+                            adv_pred=adv_pred,
+                            delta=attack_result.delta,
+                            success_rel_l2_factor=args.success_rel_l2_factor,
+                            success_mse_factor=args.success_mse_factor,
+                            radon=radon,
+                        )
+                        rows.extend(batch_rows)
+
+                        remaining_slots = args.save_examples - len(example_rows)
+                        if remaining_slots > 0:
+                            for j in range(min(x_gt.shape[0], remaining_slots)):
+                                e_ran_clean, e_nul_clean = decompose_error(
+                                    clean_pred[j: j + 1] - x_gt[j: j + 1], radon
+                                )
+                                e_ran_adv, e_nul_adv = decompose_error(
+                                    adv_pred[j: j + 1] - x_gt[j: j + 1], radon
+                                )
+                                fbp_delta = radon.fbp_la(attack_result.delta[j: j + 1])
+                                e_ran_fbp_d, _ = decompose_error(fbp_delta, radon)
+                                example_rows.append(
+                                    {
+                                        "x_gt": to_numpy_img(x_gt[j]),
+                                        "clean_init": to_numpy_img(clean_init[j]),
+                                        "adv_init": to_numpy_img(adv_init[j]),
+                                        "clean_pred": to_numpy_img(clean_pred[j]),
+                                        "adv_pred": to_numpy_img(adv_pred[j]),
+                                        "clean_y": to_numpy_img(y_clean[j]),
+                                        "adv_y": to_numpy_img(y_adv[j]),
+                                        "delta": to_numpy_img(attack_result.delta[j]),
+                                        "e_ran_clean": e_ran_clean.squeeze().numpy(),
+                                        "e_nul_clean": e_nul_clean.squeeze().numpy(),
+                                        "e_ran_adv": e_ran_adv.squeeze().numpy(),
+                                        "e_nul_adv": e_nul_adv.squeeze().numpy(),
+                                        "proj_ran_fbp_delta": e_ran_fbp_d.squeeze().numpy(),
+                                    }
+                                )
+
+                        processed += x_gt.shape[0]
+                        if processed >= args.max_samples:
+                            break
+
+                    summary_metrics = summarize_metrics(rows)
+                    summary_metrics["attack_runtime_total_sec"] = total_runtime
+                    summary_metrics["attack_runtime_per_example_sec"] = total_runtime / max(len(rows), 1)
+                    summary_metrics["model_name"] = model_name
+                    summary_metrics["attack_name"] = attack_name
+                    summary_metrics["norm"] = args.norm
+                    summary_metrics["eps"] = eps_nominal
+                    summary_metrics["eps_actual"] = eps_actual
+                    summary_metrics["attack_init_mode"] = args.attack_init_mode
+                    summary_metrics["eval_init_mode"] = args.eval_init_mode
+
+                    with open(result_dir / "summary.json", "w", encoding="utf-8") as f:
+                        json.dump(summary_metrics, f, indent=2)
+
+                    if rows:
+                        fieldnames = list(rows[0].keys())
+                        with open(result_dir / "per_sample_metrics.csv", "w", encoding="utf-8", newline="") as f:
+                            writer = csv.DictWriter(f, fieldnames=fieldnames)
+                            writer.writeheader()
+                            writer.writerows(rows)
+                    save_examples(result_dir, example_rows)
+
+                    scatter_all[attack_name][model_name].extend(rows)
+                    decomp_by_eps[(attack_name, eps_nominal)][model_name] = rows
+                    curve_rows[attack_name][model_name].append({"eps": eps_nominal, **summary_metrics})
+
+                    print(
+                        f"[model={model_name} attack={attack_name} eps={eps_nominal:g}] "
+                        f"n={len(rows)} adv_rel_l2={summary_metrics.get('adv_rel_l2_mean', float('nan')):.4f} "
+                        f"success_rel_l2={summary_metrics.get('success_rel_l2_mean', float('nan')):.3f} "
+                        f"clean_rel_l2={summary_metrics.get('clean_rel_l2_mean', float('nan')):.3f}"
                     )
-                    total_runtime += attack_result.runtime_sec
 
-                    with torch.no_grad():
-                        adv_pred, adv_init, y_adv = adapter.forward(attack_result.y_adv, mode=args.eval_init_mode)
-
-                    batch_rows = evaluate_batch(
-                        x_gt=x_gt,
-                        clean_init=clean_init,
-                        clean_y=y_clean,
-                        clean_pred=clean_pred,
-                        adv_init=adv_init,
-                        adv_y=y_adv,
-                        adv_pred=adv_pred,
-                        delta=attack_result.delta,
-                        success_rel_l2_factor=args.success_rel_l2_factor,
-                        success_mse_factor=args.success_mse_factor,
-                        radon = radon,
-
-                    )
-                    rows.extend(batch_rows)
-
-                    remaining_slots = args.save_examples - len(example_rows)
-                    if remaining_slots > 0:
-                        for j in range(min(x_gt.shape[0], remaining_slots)):
-                            e_ran_clean, e_nul_clean = decompose_error(
-                                clean_pred[j: j + 1] - x_gt[j: j + 1], radon
-                            )
-                            e_ran_adv, e_nul_adv = decompose_error(
-                                adv_pred[j: j + 1] - x_gt[j: j + 1], radon
-                            )
-                            fbp_delta = radon.fbp_la(attack_result.delta[j: j + 1])
-                            e_ran_fbp_d, _ = decompose_error(fbp_delta, radon)
-                            example_rows.append(
-                                {
-                                    "x_gt": to_numpy_img(x_gt[j]),
-                                    "clean_init": to_numpy_img(clean_init[j]),
-                                    "adv_init": to_numpy_img(adv_init[j]),
-                                    "clean_pred": to_numpy_img(clean_pred[j]),
-                                    "adv_pred": to_numpy_img(adv_pred[j]),
-                                    "clean_y": to_numpy_img(y_clean[j]),
-                                    "adv_y": to_numpy_img(y_adv[j]),
-                                    "delta": to_numpy_img(attack_result.delta[j]),
-                                    "e_ran_clean": e_ran_clean.squeeze().numpy(),
-                                    "e_nul_clean": e_nul_clean.squeeze().numpy(),
-                                    "e_ran_adv": e_ran_adv.squeeze().numpy(),
-                                    "e_nul_adv": e_nul_adv.squeeze().numpy(),
-                                    "proj_ran_fbp_delta": e_ran_fbp_d.squeeze().numpy(),
-                                }
-                            )
-
-                    processed += x_gt.shape[0]
-                    if processed >= args.max_samples:
-                        break
-
-                summary_metrics = summarize_metrics(rows)
-                summary_metrics["attack_runtime_total_sec"] = total_runtime
-                summary_metrics["attack_runtime_per_example_sec"] = total_runtime / max(len(rows), 1)
-                summary_metrics["model_name"] = model_name
-                summary_metrics["attack_name"] = attack_name
-                summary_metrics["norm"] = args.norm
-                summary_metrics["eps"] = args.eps
-                summary_metrics["attack_init_mode"] = args.attack_init_mode
-                summary_metrics["eval_init_mode"] = args.eval_init_mode
-
-                with open(result_dir / "summary.json", "w", encoding="utf-8") as f:
-                    json.dump(summary_metrics, f, indent=2)
-
-                if rows:
-                    fieldnames = list(rows[0].keys())
-                    with open(result_dir / "per_sample_metrics.csv", "w", encoding="utf-8", newline="") as f:
-                        writer = csv.DictWriter(f, fieldnames=fieldnames)
-                        writer.writeheader()
-                        writer.writerows(rows)
-                save_examples(result_dir, example_rows)
-                scatter_rows[attack_name][model_name] = rows
-
-                print(
-                    f"[model={model_name} attack={attack_name}] "
-                    f"n={len(rows)} adv_rel_l2={summary_metrics.get('adv_rel_l2_mean', float('nan')):.4f} "
-                    f"success_rel_l2={summary_metrics.get('success_rel_l2_mean', float('nan')):.3f} "
-                    f"clean_rel_l2={summary_metrics.get('clean_rel_l2_mean', float('nan')):.3f}"
-                )
-
-        # After every model and attack for this noise level, write one scatter plot
-        # per attack comparing each model's clean-vs-adversarial per-sample error.
-        for att_name, rows_by_model in scatter_rows.items():
-            scatter_dir = out_root / att_name
-            scatter_dir.mkdir(parents=True, exist_ok=True)
-            save_scatter_plot(scatter_dir, rows_by_model)
+        # After every model/attack/eps for this noise level, write the cross-run plots.
+        # Per attack: the robustness curve (error vs eps) and the pooled sensitivity
+        # scatter. Per (attack, eps): the range/null error decomposition bar chart.
+        for att_name, rows_by_model in scatter_all.items():
+            plot_dir = out_root / att_name
+            plot_dir.mkdir(parents=True, exist_ok=True)
+            save_scatter_plot(plot_dir, rows_by_model)
+            save_robustness_curve(plot_dir, curve_rows[att_name], y_key="adv_rel_l2")
+            save_robustness_curve(plot_dir, curve_rows[att_name], y_key="adv_psnr")
+        for (att_name, eps_nominal), rows_by_model in decomp_by_eps.items():
+            decomp_dir = out_root / att_name / f"eps_{eps_nominal:g}"
+            decomp_dir.mkdir(parents=True, exist_ok=True)
+            save_decomposition_bar(decomp_dir, rows_by_model)
 
 
 if __name__ == "__main__":
