@@ -50,13 +50,13 @@ echo "finished test_radon.py at: $(date)"
 
 # ── Data Generation (MatrixRadonAdapter, matrix_mode=1) ──────────────────────
 
-python -u create_rectangle_data.py --img_size $IMG_SIZE --noise 0 --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR
+#python -u create_rectangle_data.py --img_size $IMG_SIZE --noise 0 --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR
 
 echo "Finished Data Generation at: $(date)"
 
 # ── Training (adapter chosen from summary.json matrix_mode) ──────────────────
 
-python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR_NOISE --models resnet,nsn,dpnsn,dpnsn_res
+#python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR_NOISE --models resnet,nsn,dpnsn,dpnsn_res
 
 echo "Finished Training at: $(date)"
 
@@ -68,7 +68,7 @@ echo "Finished Training at: $(date)"
 # Sweep several attack budgets (fractions of mean ||y|| for zero-noise data) so the
 # robustness curve shows where each model breaks, not just the saturated eps=1.0 point.
 # --tag keeps rectangles results out of the ellipses output folder (both use --type ellipses).
-EPS="0.005,0.01,0.02,0.05,0.1,0.2,0.5,1.0"
+EPS="0.005,0.0075,0.02,0.01,0.015,0.02,0.025,0.04"
 
 python -u attack.py --type $TYPE --eps $EPS --alpha 0.5 --steps 40 --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models resnet,nsn,dpnsn,dpnsn_res --init pinv --attacks adam --norm l2 --tag rectangles
 echo "Finished Adversarial Attack at: $(date)"

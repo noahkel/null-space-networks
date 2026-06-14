@@ -4,7 +4,7 @@
   "models": "resnet,nsn,dpnsn,dpnsn_res",
   "attacks": "adam",
   "norm": "l2",
-  "eps": "0.005,0.01,0.02,0.05,0.1,0.2,0.5,1.0",
+  "eps": "0.005,0.0075,0.02,0.01,0.015,0.02,0.025,0.04",
   "alpha": 0.5,
   "steps": 40,
   "restarts": 3,
@@ -37,13 +37,13 @@
   "device": "cuda",
   "eps_list": [
     0.005,
-    0.01,
+    0.0075,
     0.02,
-    0.05,
-    0.1,
-    0.2,
-    0.5,
-    1.0
+    0.01,
+    0.015,
+    0.02,
+    0.025,
+    0.04
   ],
   "summary_path": "ellipses_out/summary.json"
 }

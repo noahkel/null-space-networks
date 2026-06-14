@@ -4,9 +4,9 @@
   "models": "resnet,nsn,dpnsn,dpnsn_res",
   "attacks": "adam",
   "norm": "l2",
-  "eps": 1.0,
+  "eps": "0.005,0.0075,0.01,0.015,0.02,0.025,0.03,0.04",
   "alpha": 0.5,
-  "steps": 40,
+  "steps": 200,
   "restarts": 3,
   "no_random_start": false,
   "objective": "mse",
@@ -31,8 +31,19 @@
   "adam_consistency_weight": 0.0,
   "save_examples": 6,
   "out_dir": null,
-  "data_root": "/scratch/noah/data/rectangles_out_matrices/0.0",
-  "model_dir": "/scratch/noah/models_rectangles_matrices",
+  "tag": "ellipses",
+  "data_root": "/scratch/noah/data/ellipses_out_matrices/0.0",
+  "model_dir": "/scratch/noah/models_ellipses_matrices",
   "device": "cuda",
+  "eps_list": [
+    0.005,
+    0.0075,
+    0.01,
+    0.015,
+    0.02,
+    0.025,
+    0.03,
+    0.04
+  ],
   "summary_path": "ellipses_out/summary.json"
 }
