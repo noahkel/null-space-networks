@@ -32,7 +32,7 @@
   "save_examples": 6,
   "out_dir": null,
   "tag": "rectangles",
-  "data_root": "/scratch/noah/data/rectangles_out_matrices/0.0",
+  "data_root": "/scratch/noah/data/rectangles_out_matrices/1.0",
   "model_dir": "/scratch/noah/models_rectangles_matrices",
   "device": "cuda",
   "eps_list": [

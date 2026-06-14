@@ -32,7 +32,7 @@
   "save_examples": 6,
   "out_dir": null,
   "tag": "ellipses",
-  "data_root": "/scratch/noah/data/ellipses_out_matrices/0.0",
+  "data_root": "/scratch/noah/data/ellipses_out_matrices/1.0",
   "model_dir": "/scratch/noah/models_ellipses_matrices",
   "device": "cuda",
   "eps_list": [
