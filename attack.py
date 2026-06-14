@@ -765,7 +765,7 @@ def save_robustness_curve(
         return
     if len(xs) > 1 and min(xs) > 0:
         ax.set_xscale("log")
-    ax.set_xlabel("Attack budget eps  (fraction of ‖y‖)")
+    ax.set_xlabel("Attack budget eps  (fraction of signal norm ‖y‖)")
     ax.set_ylabel(f"{y_key}  (mean ± 95% CI)")
     ax.set_title("Robustness curve: reconstruction error vs attack budget")
     ax.grid(True, which="both", alpha=0.3)
@@ -993,13 +993,13 @@ def main() -> None:
         summary = load_summary(example, i, data_root=args.data_root)
         beta = float(summary["mean_norm_y_minus_y_delta"])
         radon = build_radon(summary, device=device)
-        # For zero-noise data beta==0, so scale by sinogram norm instead.
-        # Each eps in eps_list is then interpreted as a fraction of mean ||y||.
-        if beta > 0:
-            eps_scale = beta
-        else:
-            mean_sino_norm = float(summary.get("mean_norm_y") or 0.0)
-            eps_scale = mean_sino_norm if mean_sino_norm > 0 else 1.0
+        # Always scale eps by the mean sinogram norm ||y|| so that eps means a
+        # consistent "fraction of the signal" at every noise level. This keeps the
+        # robustness curves comparable across noise levels (and against the zero-noise
+        # run); scaling by beta (the noise norm) instead would make the same eps a
+        # different perturbation at each noise level. beta is kept only for model build.
+        mean_sino_norm = float(summary.get("mean_norm_y") or 0.0)
+        eps_scale = mean_sino_norm if mean_sino_norm > 0 else 1.0
         loader = get_loader(
             example=example,
             init_method=init_method,
