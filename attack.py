@@ -39,15 +39,24 @@ def linf_norm_batch(x: torch.Tensor) -> torch.Tensor:
     return x.reshape(x.shape[0], -1).abs().max(dim=1).values
 
 
-def proj_l2_ball(delta: torch.Tensor, eps: float) -> torch.Tensor:
-    if eps <= 0:
-        return torch.zeros_like(delta)
+def proj_l2_ball(delta: torch.Tensor, eps) -> torch.Tensor:
+    # eps may be a scalar (one global budget) or a per-sample 1-D tensor of shape [B]
+    # (per-sample budget eps_i = eps_frac * ||y_i||). A zero budget maps to zeros.
     norms = l2_norm_batch(delta).clamp_min(1e-12)
-    scale = torch.minimum(torch.ones_like(norms), torch.full_like(norms, eps) / norms)
+    if torch.is_tensor(eps):
+        eps_vec = eps.to(device=norms.device, dtype=norms.dtype).reshape(-1).clamp_min(0.0)
+    else:
+        if eps <= 0:
+            return torch.zeros_like(delta)
+        eps_vec = torch.full_like(norms, float(eps))
+    scale = torch.minimum(torch.ones_like(norms), eps_vec / norms)
     return delta * scale.view(-1, 1, 1, 1)
 
 
-def proj_linf_ball(delta: torch.Tensor, eps: float) -> torch.Tensor:
+def proj_linf_ball(delta: torch.Tensor, eps) -> torch.Tensor:
+    if torch.is_tensor(eps):
+        eps_t = eps.to(device=delta.device, dtype=delta.dtype).reshape(-1, 1, 1, 1).clamp_min(0.0)
+        return torch.max(torch.min(delta, eps_t), -eps_t)
     if eps <= 0:
         return torch.zeros_like(delta)
     return delta.clamp(-eps, eps)
@@ -63,10 +72,14 @@ def project_delta(delta: torch.Tensor, eps: float, norm: str, projector: Callabl
 
 
 def random_start_like(y: torch.Tensor, eps: float, norm: str, projector: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
-    if eps <= 0:
+    if not torch.is_tensor(eps) and eps <= 0:
         return torch.zeros_like(y)
     if norm == "linf":
-        delta = torch.empty_like(y).uniform_(-eps, eps)
+        if torch.is_tensor(eps):
+            eps_t = eps.to(device=y.device, dtype=y.dtype).reshape(-1, 1, 1, 1)
+            delta = (torch.rand_like(y) * 2.0 - 1.0) * eps_t
+        else:
+            delta = torch.empty_like(y).uniform_(-eps, eps)
     elif norm == "l2":
         delta = torch.randn_like(y)
         delta = proj_l2_ball(delta, eps)
@@ -249,11 +262,12 @@ def fgsm_attack(
     grad = torch.autograd.grad(loss, y_adv, retain_graph=False, create_graph=False)[0]
 
     with torch.no_grad():
+        eps_b = eps.view(-1, 1, 1, 1) if torch.is_tensor(eps) else eps
         if norm == "linf":
-            delta = eps * grad.sign()
+            delta = eps_b * grad.sign()
         elif norm == "l2":
             grad_norm = l2_norm_batch(grad).clamp_min(1e-12).view(-1, 1, 1, 1)
-            delta = eps * grad / grad_norm
+            delta = eps_b * grad / grad_norm
         else:
             raise ValueError(f"Unsupported norm '{norm}'")
         y_adv = adapter.projector(y_proj + delta)
@@ -740,24 +754,26 @@ def save_robustness_curve(
     curve_by_model: Dict[str, List[Dict]],
     y_key: str = "adv_rel_l2",
 ) -> None:
-    """Plot mean y_key (± 95% CI) against the nominal attack budget eps, one line per
-    model. This is the key view a single-eps run cannot give: it shows the perturbation
-    size at which each model's reconstruction actually breaks."""
+    """Plot the median of y_key (with an inter-quartile band) against the nominal attack
+    budget eps, one line per model. Median + IQR is robust to the small-||gt|| / small-||y||
+    outlier samples that skew the mean; it shows the perturbation size at which each
+    model's reconstruction actually breaks."""
     if not curve_by_model:
         return
-    mean_key, ci_key = f"{y_key}_mean", f"{y_key}_ci95"
+    med_key, q25_key, q75_key = f"{y_key}_median", f"{y_key}_q25", f"{y_key}_q75"
     fig, ax = plt.subplots(figsize=(7, 5))
     colors = plt.cm.tab10.colors
     xs: List[float] = []
     plotted = False
     for i, (model_name, points) in enumerate(curve_by_model.items()):
-        pts = sorted((p for p in points if mean_key in p), key=lambda p: p["eps"])
+        pts = sorted((p for p in points if med_key in p), key=lambda p: p["eps"])
         if not pts:
             continue
         xs = [p["eps"] for p in pts]
-        ys = [p[mean_key] for p in pts]
-        es = [p.get(ci_key, 0.0) for p in pts]
-        ax.errorbar(xs, ys, yerr=es, marker="o", capsize=3, lw=1.5,
+        ys = [p[med_key] for p in pts]
+        lo = [max(0.0, p[med_key] - p.get(q25_key, p[med_key])) for p in pts]
+        hi = [max(0.0, p.get(q75_key, p[med_key]) - p[med_key]) for p in pts]
+        ax.errorbar(xs, ys, yerr=[lo, hi], marker="o", capsize=3, lw=1.5,
                     label=model_name, color=colors[i % len(colors)])
         plotted = True
     if not plotted:
@@ -766,7 +782,7 @@ def save_robustness_curve(
     if len(xs) > 1 and min(xs) > 0:
         ax.set_xscale("log")
     ax.set_xlabel("Attack budget eps  (fraction of signal norm ‖y‖)")
-    ax.set_ylabel(f"{y_key}  (mean ± 95% CI)")
+    ax.set_ylabel(f"{y_key}  (median, IQR band)")
     ax.set_title("Robustness curve: reconstruction error vs attack budget")
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(fontsize=8)
@@ -786,12 +802,12 @@ def save_decomposition_bar(
     if not models:
         return
 
-    def mean_of(rows: List[Dict], key: str) -> float:
+    def median_of(rows: List[Dict], key: str) -> float:
         vals = [r[key] for r in rows if key in r]
-        return float(np.mean(vals)) if vals else float("nan")
+        return float(np.median(vals)) if vals else float("nan")
 
-    clean_nul = [mean_of(rows_by_model[m], "clean_e_nul_frac") for m in models]
-    adv_nul = [mean_of(rows_by_model[m], "adv_e_nul_frac") for m in models]
+    clean_nul = [median_of(rows_by_model[m], "clean_e_nul_frac") for m in models]
+    adv_nul = [median_of(rows_by_model[m], "adv_e_nul_frac") for m in models]
     if all(math.isnan(v) for v in clean_nul + adv_nul):
         return
 
@@ -802,9 +818,9 @@ def save_decomposition_bar(
     ax.bar(x + w / 2, adv_nul, w, label="adversarial", color="#D4537E")
     ax.set_xticks(x)
     ax.set_xticklabels(models)
-    ax.set_ylabel("‖e_nul‖ / ‖e‖")
+    ax.set_ylabel("‖e_nul‖ / ‖e‖  (median)")
     ax.set_ylim(0, 1.05)
-    ax.set_title("Null-space fraction of error: clean vs adversarial")
+    ax.set_title("Null-space fraction of error: clean vs adversarial (median)")
     ax.legend(fontsize=8)
     plt.tight_layout()
     plt.savefig(out_dir / "decomp_nul_frac.png", dpi=150)
@@ -848,6 +864,8 @@ def summarize_metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
         metrics[f"{key}_mean"] = mean
         metrics[f"{key}_ci95"] = half_width
         metrics[f"{key}_median"] = float(np.median(values))
+        metrics[f"{key}_q25"] = float(np.percentile(values, 25))
+        metrics[f"{key}_q75"] = float(np.percentile(values, 75))
 
     return metrics
 
@@ -993,11 +1011,11 @@ def main() -> None:
         summary = load_summary(example, i, data_root=args.data_root)
         beta = float(summary["mean_norm_y_minus_y_delta"])
         radon = build_radon(summary, device=device)
-        # Always scale eps by the mean sinogram norm ||y|| so that eps means a
-        # consistent "fraction of the signal" at every noise level. This keeps the
-        # robustness curves comparable across noise levels (and against the zero-noise
-        # run); scaling by beta (the noise norm) instead would make the same eps a
-        # different perturbation at each noise level. beta is kept only for model build.
+        # eps is applied per sample as eps_i = eps_nominal * ||y_i|| (see the batch loop
+        # below), so it is a consistent fraction of *that sample's* signal norm: the same
+        # eps means the same relative perturbation for every image and at every noise
+        # level. mean_sino_norm is only a dataset-mean reference recorded in the summary;
+        # beta (the noise norm) is kept only for model construction.
         mean_sino_norm = float(summary.get("mean_norm_y") or 0.0)
         eps_scale = mean_sino_norm if mean_sino_norm > 0 else 1.0
         loader = get_loader(
@@ -1069,6 +1087,8 @@ def main() -> None:
                         break
             for attack_name in attack_names:
                 for eps_nominal in eps_list:
+                    # Reference (dataset-mean) budget, recorded for context only. The
+                    # budget actually applied is per-sample (eps_nominal * ||y_i||), below.
                     eps_actual = eps_nominal * eps_scale
                     result_dir = out_root / model_name / attack_name / f"{args.norm}_eps_{eps_nominal:g}"
                     result_dir.mkdir(parents=True, exist_ok=True)
@@ -1082,6 +1102,12 @@ def main() -> None:
                         if processed >= args.max_samples:
                             break
 
+                        # Per-sample L2 budget: eps_i = eps_nominal * ||y_i||, so every
+                        # sample gets the same relative perturbation regardless of its
+                        # sinogram norm (a single global budget over-attacks small-||y||
+                        # samples and under-attacks large ones).
+                        eps_batch = eps_nominal * l2_norm_batch(y_clean)
+
                         attack_result = run_attack(
                             attack_name=attack_name,
                             adapter=adapter,
@@ -1089,7 +1115,7 @@ def main() -> None:
                             y_clean=y_clean,
                             clean_pred=clean_pred,
                             args=args,
-                            eps=eps_actual,
+                            eps=eps_batch,
                         )
                         total_runtime += attack_result.runtime_sec
 
@@ -1151,7 +1177,8 @@ def main() -> None:
                     summary_metrics["attack_name"] = attack_name
                     summary_metrics["norm"] = args.norm
                     summary_metrics["eps"] = eps_nominal
-                    summary_metrics["eps_actual"] = eps_actual
+                    summary_metrics["eps_actual"] = eps_actual  # dataset-mean reference; budget is per-sample
+                    summary_metrics["eps_budget_mode"] = "per_sample_l2"
                     summary_metrics["attack_init_mode"] = args.attack_init_mode
                     summary_metrics["eval_init_mode"] = args.eval_init_mode
 
