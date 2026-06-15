@@ -56,7 +56,7 @@ echo "Finished Data Generation at: $(date)"
 
 # ── Training (adapter chosen from summary.json matrix_mode) ──────────────────
 
-python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR_NOISE --models resnet,nsn,dpnsn,dpnsn_res
+python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR_NOISE --models resnet,nsn
 
 echo "Finished Training at: $(date)"
 
@@ -70,7 +70,7 @@ echo "Finished Training at: $(date)"
 # --tag keeps rectangles results out of the ellipses output folder (both use --type ellipses).
 EPS="0.005,0.01,0.02,0.05,0.1,0.2"
 
-python -u attack.py --type $TYPE --eps $EPS --alpha 0.5 --steps 200 --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models resnet,nsn,dpnsn,dpnsn_res --init pinv --attacks adam --norm l2 --tag rectangles_n0.01
+python -u attack.py --type $TYPE --eps $EPS --alpha 0.5 --steps 200 --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models resnet,nsn --init pinv --attacks adam --norm l2 --tag rectangles_n0.01
 echo "Finished Adversarial Attack at: $(date)"
 
 #python -u test_radon.py --data-dir $DATA_DIR_NOISE --model-dir $MODEL_DIR --tag "rectangles"
