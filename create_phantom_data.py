@@ -146,8 +146,8 @@ def main(shape: str) -> None:
     ensure_dir(OUT_DIR)
     ensure_dir(OUT_DIR / "gt")
     ensure_dir(OUT_DIR / "fbp")
-    #ensure_dir(OUT_DIR / "tv")
-    #ensure_dir(OUT_DIR / "lw")
+    ensure_dir(OUT_DIR / "tv")
+    ensure_dir(OUT_DIR / "lw")
     ensure_dir(OUT_DIR / "sino")
     ensure_dir(OUT_DIR / "pinv")
     ensure_dir(OUT_DIR / "pinv_full")
@@ -234,61 +234,61 @@ def main(shape: str) -> None:
 
     subset = samples[:TV_SUBSET]
 
-    #print("Selecting TV alpha...")
-    #alpha_errors = {}
+    print("Selecting TV alpha on a subset...")
+    alpha_errors = {}
+    for alpha in TV_ALPHA_GRID:
+        errs = []
+        for x_gt, y_delta in subset:
+            x0 = radon.fbp(y_delta, filter_name="ram-lak")
+            x_tv = tv_cp(
+                x0=x0,
+                A=radon.forward_la,
+                AT=radon.backward_la,
+                g=y_delta,
+                alpha=float(alpha),
+                tau=float(tau),
+                sigma=float(sigma),
+                theta=THETA,
+                Niter=TV_ITERS_SELECT,
+                print_flag=False,
+            ).squeeze()
+            errs.append(rel_l2(x_tv, x_gt))
+        alpha_errors[float(alpha)] = float(np.mean(errs))
+        print(f"  alpha={float(alpha):.4g}: mean rel L2 = {alpha_errors[float(alpha)]:.4e}")
 
-    #for alpha in TV_ALPHA_GRID:
-     #   errs = []
-      #  for x_gt, y_delta in subset:
-       #     x0 = radon.fbp(y_delta)
-        #    x_tv = tv_cp(
-         #       x0=x0,
-          #      A=radon.forward_la,
-           #     AT=radon.backward_la,
-            #    g=y_delta,
-             #   alpha=alpha,
-              #  tau=tau,
-               # sigma=sigma,
-                #theta=THETA,
-                #Niter=TV_ITERS_SELECT,
-                #print_flag=False,
-                # grad_scale=0
-            #).squeeze()
-            #errs.append(rel_l2(x_tv, x_gt))
-        #alpha_errors[alpha] = float(np.mean(errs))
-        #print(f"alpha={alpha}: mean rel L2 = {alpha_errors[alpha]:.4e}")
+    best_alpha = min(alpha_errors, key=alpha_errors.get)
+    print(f"Best TV alpha: {best_alpha}")
 
-    #best_alpha = min(alpha_errors, key=alpha_errors.get)
-    #print(f"Best alpha: {best_alpha}")
-
-    #print("Running final TV reconstructions...")
-    #for i, (x_gt, y_delta) in enumerate(samples):
-     #   x0 = radon.fbp(y_delta)
-      #  x_tv = tv_cp(
-       #     x0=x0,
-        #    A=radon.forward_la,
-         #   AT=radon.backward_la,
-          #  g=y_delta,
-           # alpha=best_alpha,
-            #tau=tau,
-            #sigma=sigma,
-            #theta=THETA,
-            #Niter=TV_ITERS_FINAL,
-            #print_flag=False,
-            # grad_scale=0
-        #).squeeze()
-
-        #x_lw = landweber(
-         #   A=radon.forward_la,
-          #  AT=radon.backward_la,
-           # g=y_delta,
-            #x0=x0,
-            #omega=omega,
-            #n_iter=LW_ITERS,
-        #).squeeze()
-
-        #np.save(OUT_DIR / "tv" / f"{i:05d}.npy", x_tv.detach().cpu().numpy())
-        #np.save(OUT_DIR / "lw" / f"{i:05d}.npy", x_lw.detach().cpu().numpy())
+    print("Running final TV + Landweber reconstructions...")
+    for i, (x_gt, y_delta) in enumerate(samples):
+        # Seed both solvers with the same FBP attack.py uses for tv/lw
+        # (radon.fbp(..., ram-lak)) so the precomputed train-time init matches the
+        # init attack.py recomputes on the fly (clean and adversarial share one init).
+        x0 = radon.fbp(y_delta, filter_name="ram-lak")
+        x_tv = tv_cp(
+            x0=x0,
+            A=radon.forward_la,
+            AT=radon.backward_la,
+            g=y_delta,
+            alpha=float(best_alpha),
+            tau=float(tau),
+            sigma=float(sigma),
+            theta=THETA,
+            Niter=TV_ITERS_FINAL,
+            print_flag=False,
+        ).squeeze()
+        x_lw = landweber(
+            A=radon.forward_la,
+            AT=radon.backward_la,
+            g=y_delta,
+            x0=x0,
+            omega=omega,
+            n_iter=LW_ITERS,
+        ).squeeze()
+        np.save(OUT_DIR / "tv" / f"{i:05d}.npy", x_tv.detach().cpu().numpy())
+        np.save(OUT_DIR / "lw" / f"{i:05d}.npy", x_lw.detach().cpu().numpy())
+        if (i + 1) % 500 == 0:
+            print(f"  TV/LW reconstructions: {i + 1}/{N_SAMPLES}")
 
     summary = {
         "dataset": shape,
@@ -306,14 +306,14 @@ def main(shape: str) -> None:
         "noise_sigma_rel": float(NOISE_sigma_REL),
         "mean_norm_y": float(np.array(y_norms).mean()),
         "mean_norm_y_minus_y_delta": float(y_diff_norms.mean()),
-        #"tv_alpha_grid": [float(a) for a in TV_ALPHA_GRID.tolist()],
-        #"tv_alpha_errors_subset": alpha_errors,
-        #"tv_best_alpha": None, # float(best_alpha), if TV loop is running!
-        #"tv_iters_select": int(TV_ITERS_SELECT),
-        #"tv_iters_final": int(TV_ITERS_FINAL),
-        #"lw_iters": int(LW_ITERS),
-        #"lw_omega": float(omega),
-        #"lw_omega_factor": float(LW_OMEGA_FACTOR),
+        "tv_alpha_grid": [float(a) for a in TV_ALPHA_GRID.tolist()],
+        "tv_alpha_errors_subset": alpha_errors,
+        "tv_best_alpha": float(best_alpha),
+        "tv_iters_select": int(TV_ITERS_SELECT),
+        "tv_iters_final": int(TV_ITERS_FINAL),
+        "lw_iters": int(LW_ITERS),
+        "lw_omega": float(omega),
+        "lw_omega_factor": float(LW_OMEGA_FACTOR),
         "operator_norm_A2": float(L),
         "matrix_mode": int(MATRIX_MODE),
         "svd_threshold": SVD_THRESH if MATRIX_MODE == 1 else None
