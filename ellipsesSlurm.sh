@@ -70,8 +70,11 @@ echo "Finished Training at: $(date)"
 # --tag includes the noise level so runs do not overwrite each other.
 EPS="0.005,0.01,0.02,0.05,0.1,0.2"
 
-python -u attack.py --type $TYPE --eps $EPS --alpha 0.5 --steps 200 --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models resnet,nsn --init pinv --attacks adam --norm l2 --tag ellipses_n0.01
-
+for INIT in fbp pinv tv lw; do
+  python -u attack.py --type $TYPE --eps $EPS --alpha 0.5 --steps 200 \
+    --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models resnet,nsn \
+    --init $INIT --attacks adam --norm l2 --tag ellipses_n0.01
+done
 echo "Finished Adversarial Attack at: $(date)"
 
 #python -u test_radon.py --data-dir $DATA_DIR_NOISE --model-dir $MODEL_DIR --tag "ellipses"

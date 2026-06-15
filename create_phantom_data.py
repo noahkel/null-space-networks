@@ -219,11 +219,11 @@ def main(shape: str) -> None:
         x_fbp = radon_full.fbp_la(y_delta).squeeze()
 
         x_pinv = radon.backward_la(y_delta).squeeze()
-        x_pinv_full = radon_full.backward_la(y_delta).squeeze()
+        #x_pinv_full = radon_full.backward_la(y_delta).squeeze()
         np.save(OUT_DIR / "gt" / f"{i:05d}.npy", x_gt.detach().cpu().numpy())
         np.save(OUT_DIR / "fbp" / f"{i:05d}.npy", x_fbp.detach().cpu().numpy())
         np.save(OUT_DIR / "pinv" / f"{i:05d}.npy", x_pinv.detach().cpu().numpy())
-        np.save(OUT_DIR / "pinv_full" / f"{i:05d}.npy", x_pinv_full.detach().cpu().numpy())
+        #np.save(OUT_DIR / "pinv_full" / f"{i:05d}.npy", x_pinv_full.detach().cpu().numpy())
         np.save(OUT_DIR / "sino" / f"{i:05d}.npy", y_delta.squeeze().detach().cpu().numpy())
 
         samples.append((x_gt, y_delta))
