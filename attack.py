@@ -19,7 +19,19 @@ from src.landweber import landweber
 from src.radon import AstraRadonAdapter
 from src.radon_matrix import MatrixRadonAdapter
 from src.total_variation import tv_cp
-from src.utils import build_models, decompose_error, psnr, rel_l2_np, set_seed, ssim, to_4d, visualise_decomposition
+from src.utils import (
+    build_models,
+    decompose_error,
+    mae,
+    max_abs_err,
+    nrmse,
+    psnr,
+    rel_l2_np,
+    set_seed,
+    ssim,
+    to_4d,
+    visualise_decomposition,
+)
 
 
 
@@ -195,11 +207,34 @@ class ModelAttackAdapter:
         init_reconstructor: InitReconstructor,
         projector: Callable[[torch.Tensor], torch.Tensor],
         attack_init_mode: str,
+        noise_subspace: str = "measured",
     ):
         self.model = model
         self.init_reconstructor = init_reconstructor
         self.projector = projector
         self.attack_init_mode = attack_init_mode
+        # "measured" -> standard sinogram-domain attack (current behaviour);
+        # "null"     -> force the network-input perturbation into null(A_la),
+        #               so the adversarial noise attacks the null-space component.
+        self.noise_subspace = noise_subspace
+        self._clean_init_ref: Optional[torch.Tensor] = None
+
+    def prepare_clean(self, y_clean: torch.Tensor, mode: Optional[str] = None) -> None:
+        """Cache the clean init reconstruction used as the reference point for the
+        null-space noise projection. Must be called once per batch (with the init
+        mode that will be used) before attacking / evaluating. A no-op unless
+        noise_subspace == 'null'."""
+        if self.noise_subspace != "null":
+            self._clean_init_ref = None
+            return
+        mode = mode or self.attack_init_mode
+        with torch.no_grad():
+            y_c = self.projector(y_clean)
+            if mode == "surrogate":
+                ref = self.init_reconstructor.surrogate(y_c)
+            else:
+                ref = self.init_reconstructor.exact(y_c)
+        self._clean_init_ref = ref.detach()
 
     def build_inputs(self, y_adv: torch.Tensor, mode: Optional[str] = None, project: bool = True,) -> Tuple[torch.Tensor, torch.Tensor]:
         mode = mode or self.attack_init_mode
@@ -213,6 +248,20 @@ class ModelAttackAdapter:
             x_init = x_exact + (x_surrogate - x_surrogate.detach())
         else:
             raise ValueError(f"Unknown init mode '{mode}'")
+
+        # Null-space noise projection: keep only the component of the input
+        # perturbation (x_init - clean_init) that lives in null(A_la). The
+        # range component is data-determined and passed through unchanged by the
+        # NSN, so confining the perturbation to the null space forces the attack
+        # to target exactly the component the network is responsible for.
+        # Differentiable: radon.proj_null_image is an SVD/CG projection, so the
+        # gradient still flows back to y_adv.
+        if self.noise_subspace == "null" and self._clean_init_ref is not None:
+            radon = self.init_reconstructor.radon
+            ref = self._clean_init_ref.to(device=x_init.device, dtype=x_init.dtype)
+            d_null = radon.proj_null_image(x_init - ref)
+            x_init = ref + d_null
+
         return x_init, y_adv
 
     def forward(self, y_adv: torch.Tensor, mode: Optional[str] = None, project: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -227,7 +276,30 @@ def attack_objective(
     clean_pred: torch.Tensor,
     objective: str,
     shift_weight: float,
+    radon=None,
 ) -> torch.Tensor:
+    """Attack loss to be *maximised*.
+
+    The plain "mse"/"shift"/"hybrid" objectives reward total reconstruction
+    error. On a data-consistent model (NSN/DPNSN) the cheapest way to grow that
+    error is to inject error into the *range* (measured) component, which the
+    network reproduces by design — so the attack looks strong but is structurally
+    trivial and not comparable to what the same attack does to ResNet.
+
+    The "null" objectives instead reward only the *null-space* component of the
+    error, ‖P_null (pred - target)‖². P_null is the image-domain projector onto
+    null(A_la) (radon.proj_null_image, differentiable). This forces the optimiser
+    to corrupt exactly the component the network is responsible for — the part
+    that can hallucinate/break structure the way a ResNet attack does — rather
+    than taking the free range-space channel.
+
+      null        : ‖P_null (pred - x_gt)‖²            (null-space error vs GT)
+      null_shift  : ‖P_null (pred - clean_pred)‖²      (null-space deviation from
+                                                        the clean reconstruction)
+      null_hybrid : null + shift_weight * (range-error penalty), i.e. reward
+                    null-space damage while *penalising* range-space error so the
+                    budget is spent on structural rather than trivial corruption.
+    """
     gt_term = reduce_loss((pred - x_gt) ** 2)
     shift_term = reduce_loss((pred - clean_pred.detach()) ** 2)
 
@@ -237,6 +309,21 @@ def attack_objective(
         return shift_term
     if objective == "hybrid":
         return gt_term + shift_weight * shift_term
+
+    if objective in ("null", "null_shift", "null_hybrid"):
+        if radon is None:
+            raise ValueError(f"Objective '{objective}' requires a radon operator.")
+        err = (pred - x_gt) if objective != "null_shift" else (pred - clean_pred.detach())
+        err_null = radon.proj_null_image(err)
+        null_term = reduce_loss(err_null ** 2)
+        if objective != "null_hybrid":
+            return null_term
+        # Penalise the range component so budget is not wasted on the trivial,
+        # data-consistent channel the NSN cannot correct by design.
+        err_range = err - err_null
+        range_term = reduce_loss(err_range ** 2)
+        return null_term - shift_weight * range_term
+
     raise ValueError(f"Unknown objective '{objective}'")
 
 
@@ -256,7 +343,7 @@ def fgsm_attack(
         y_proj = adapter.projector(y_clean)
     y_adv = y_clean.detach().clone().requires_grad_(True)
     pred, _, y_adv = adapter.forward(y_adv, project=False)
-    loss = attack_objective(pred, x_gt, clean_pred, objective, shift_weight)
+    loss = attack_objective(pred, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon)
     if stealth_weight > 0.0:
         loss = loss - stealth_weight * reduce_loss((y_adv - y_clean.detach()).abs())
     grad = torch.autograd.grad(loss, y_adv, retain_graph=False, create_graph=False)[0]
@@ -304,7 +391,7 @@ def pgd_attack(
                 y_proj = adapter.projector(y_clean + delta)
             y_adv = (y_clean + delta).detach().requires_grad_(True)
             pred, _, _ = adapter.forward(y_adv, project=False)
-            loss = attack_objective(pred, x_gt, clean_pred, objective, shift_weight)
+            loss = attack_objective(pred, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon)
             if stealth_weight > 0.0:
                 loss = loss - stealth_weight * reduce_loss((y_adv - y_clean.detach()).abs())
             grad = torch.autograd.grad(loss, y_adv, retain_graph=False, create_graph=False)[0]
@@ -322,7 +409,7 @@ def pgd_attack(
         with torch.no_grad():
             y_adv = adapter.projector(y_clean + delta)
             pred, _, _ = adapter.forward(y_adv, project=False)
-            score = float(attack_objective(pred, x_gt, clean_pred, objective, shift_weight).item())
+            score = float(attack_objective(pred, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon).item())
             if score > best_score:
                 best_score = score
                 best_y_adv = y_adv.detach().clone()
@@ -361,8 +448,8 @@ def spsa_attack(
             with torch.no_grad():
                 pred_plus, _, _ = adapter.forward(y_plus, mode="exact")
                 pred_minus, _, _ = adapter.forward(y_minus, mode="exact")
-                loss_plus = attack_objective(pred_plus, x_gt, clean_pred, objective, shift_weight)
-                loss_minus = attack_objective(pred_minus, x_gt, clean_pred, objective, shift_weight)
+                loss_plus = attack_objective(pred_plus, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon)
+                loss_minus = attack_objective(pred_minus, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon)
 
             grad_est = grad_est + ((loss_plus - loss_minus) / (2.0 * sigma)) * direction
 
@@ -423,7 +510,7 @@ def adam_attack(
         pred, x_init, _ = adapter.forward(y_adv, project=False)
 
         # Negate because Adam minimizes, but we want to maximize reconstruction error
-        loss = -attack_objective(pred, x_gt, clean_pred, objective, shift_weight)
+        loss = -attack_objective(pred, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon)
 
         if tv_weight > 0.0:
             loss = loss + tv_weight * total_variation(pred)
@@ -587,6 +674,13 @@ def evaluate_batch(
         init_shift = rel_l2_np(adv_init_np, clean_init_np)
         pred_shift = rel_l2_np(adv_pred_np, clean_pred_np)
 
+        # Image-comparison metrics for the *initialisation* reconstruction
+        # (FBP/pinv/tv/lw output, i.e. the network input before the NSN).
+        # These quantify how much the attack already corrupts the recon that
+        # is fed into the network, separately from the final prediction.
+        clean_init_rel_l2 = rel_l2_np(clean_init_np, gt_np)
+        adv_init_rel_l2 = rel_l2_np(adv_init_np, gt_np)
+
         clean_mse = float(clean_mse_batch[i].item())
         adv_mse = float(adv_mse_batch[i].item())
         clean_sino_l2 = float(np.linalg.norm(clean_y_np.reshape(-1)))
@@ -604,6 +698,22 @@ def evaluate_batch(
             "adv_psnr": psnr(adv_pred_np, gt_np),
             "clean_ssim": ssim(clean_pred_np, gt_np),
             "adv_ssim": ssim(adv_pred_np, gt_np),
+            "clean_mae": mae(clean_pred_np, gt_np),
+            "adv_mae": mae(adv_pred_np, gt_np),
+            "clean_nrmse": nrmse(clean_pred_np, gt_np),
+            "adv_nrmse": nrmse(adv_pred_np, gt_np),
+            "clean_max_err": max_abs_err(clean_pred_np, gt_np),
+            "adv_max_err": max_abs_err(adv_pred_np, gt_np),
+            # Init-reconstruction metrics (network input, before the NSN)
+            "clean_init_rel_l2": clean_init_rel_l2,
+            "adv_init_rel_l2": adv_init_rel_l2,
+            "init_rel_l2_ratio": adv_init_rel_l2 / max(clean_init_rel_l2, 1e-12),
+            "clean_init_psnr": psnr(clean_init_np, gt_np),
+            "adv_init_psnr": psnr(adv_init_np, gt_np),
+            "clean_init_ssim": ssim(clean_init_np, gt_np),
+            "adv_init_ssim": ssim(adv_init_np, gt_np),
+            "clean_init_mae": mae(clean_init_np, gt_np),
+            "adv_init_mae": mae(adv_init_np, gt_np),
             "pred_shift_rel_l2": pred_shift,
             "init_shift_rel_l2": init_shift,
             "delta_l2": delta_l2_i,
@@ -634,6 +744,28 @@ def evaluate_batch(
                 "adv_e_nul_l2": adv_e_nul_l2,
                 "adv_e_ran_frac": adv_e_ran_l2 / max(adv_e_l2, 1e-12),
                 "adv_e_nul_frac": adv_e_nul_l2 / max(adv_e_l2, 1e-12),
+            })
+
+            # Decompose the *init-reconstruction* error too, so we can see how the
+            # attack distributes range vs null energy in the network input,
+            # before the NSN is applied.
+            e_ran_ic, e_nul_ic = decompose_error(clean_init[i: i + 1] - x_gt[i: i + 1], radon)
+            e_ran_ia, e_nul_ia = decompose_error(adv_init[i: i + 1] - x_gt[i: i + 1], radon)
+            clean_ie_l2 = max(float(np.linalg.norm((clean_init_np - gt_np).ravel())), 1e-12)
+            adv_ie_l2 = max(float(np.linalg.norm((adv_init_np - gt_np).ravel())), 1e-12)
+            clean_ie_ran_l2 = float(np.linalg.norm(e_ran_ic.numpy().ravel()))
+            clean_ie_nul_l2 = float(np.linalg.norm(e_nul_ic.numpy().ravel()))
+            adv_ie_ran_l2 = float(np.linalg.norm(e_ran_ia.numpy().ravel()))
+            adv_ie_nul_l2 = float(np.linalg.norm(e_nul_ia.numpy().ravel()))
+            row.update({
+                "clean_init_e_ran_l2": clean_ie_ran_l2,
+                "clean_init_e_nul_l2": clean_ie_nul_l2,
+                "clean_init_e_ran_frac": clean_ie_ran_l2 / max(clean_ie_l2, 1e-12),
+                "clean_init_e_nul_frac": clean_ie_nul_l2 / max(clean_ie_l2, 1e-12),
+                "adv_init_e_ran_l2": adv_ie_ran_l2,
+                "adv_init_e_nul_l2": adv_ie_nul_l2,
+                "adv_init_e_ran_frac": adv_ie_ran_l2 / max(adv_ie_l2, 1e-12),
+                "adv_init_e_nul_frac": adv_ie_nul_l2 / max(adv_ie_l2, 1e-12),
             })
 
         rows.append(row)
@@ -667,6 +799,24 @@ def save_examples(
             fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         plt.savefig(out_dir / f"example_{idx:03d}.png", dpi=160)
         plt.close(fig)
+
+        if "e_ran_init_clean" in row:
+            visualise_decomposition(
+                gt=row["x_gt"],
+                recon=row["clean_init"],
+                e_ran=row["e_ran_init_clean"],
+                e_nul=row["e_nul_init_clean"],
+                out_path=out_dir / f"decomp_init_clean_{idx:03d}.png",
+                title=f"Clean — init error decomposition, before NSN (example {idx})",
+            )
+            visualise_decomposition(
+                gt=row["x_gt"],
+                recon=row["adv_init"],
+                e_ran=row["e_ran_init_adv"],
+                e_nul=row["e_nul_init_adv"],
+                out_path=out_dir / f"decomp_init_adv_{idx:03d}.png",
+                title=f"Adversarial — init error decomposition, before NSN (example {idx})",
+            )
 
         if "e_ran_clean" in row:
             visualise_decomposition(
@@ -794,10 +944,17 @@ def save_robustness_curve(
 def save_decomposition_bar(
     out_dir: Path,
     rows_by_model: Dict[str, List[Dict]],
+    clean_key: str = "clean_e_nul_frac",
+    adv_key: str = "adv_e_nul_frac",
+    fname: str = "decomp_nul_frac.png",
+    title: str = "Null-space fraction of error: clean vs adversarial (median)",
 ) -> None:
     """Grouped bar chart of the null-space fraction of the error (‖e_nul‖/‖e‖), clean
     vs adversarial, per model. Shows that the attack pushes error out of the null space
-    and into the (data-consistent) range space that the NSN passes through unchanged."""
+    and into the (data-consistent) range space that the NSN passes through unchanged.
+
+    Call with the ``*_init_e_nul_frac`` keys to draw the same chart for the
+    initialisation reconstruction (the network input, before the NSN)."""
     models = [m for m in rows_by_model if rows_by_model[m]]
     if not models:
         return
@@ -806,8 +963,8 @@ def save_decomposition_bar(
         vals = [r[key] for r in rows if key in r]
         return float(np.median(vals)) if vals else float("nan")
 
-    clean_nul = [median_of(rows_by_model[m], "clean_e_nul_frac") for m in models]
-    adv_nul = [median_of(rows_by_model[m], "adv_e_nul_frac") for m in models]
+    clean_nul = [median_of(rows_by_model[m], clean_key) for m in models]
+    adv_nul = [median_of(rows_by_model[m], adv_key) for m in models]
     if all(math.isnan(v) for v in clean_nul + adv_nul):
         return
 
@@ -820,10 +977,10 @@ def save_decomposition_bar(
     ax.set_xticklabels(models)
     ax.set_ylabel("‖e_nul‖ / ‖e‖  (median)")
     ax.set_ylim(0, 1.05)
-    ax.set_title("Null-space fraction of error: clean vs adversarial (median)")
+    ax.set_title(title)
     ax.legend(fontsize=8)
     plt.tight_layout()
-    plt.savefig(out_dir / "decomp_nul_frac.png", dpi=150)
+    plt.savefig(out_dir / fname, dpi=150)
     plt.close(fig)
 def summarize_metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
     metrics: Dict[str, float] = {"num_examples": len(rows)}
@@ -842,6 +999,21 @@ def summarize_metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
         "adv_psnr",
         "clean_ssim",
         "adv_ssim",
+        "clean_mae",
+        "adv_mae",
+        "clean_nrmse",
+        "adv_nrmse",
+        "clean_max_err",
+        "adv_max_err",
+        "clean_init_rel_l2",
+        "adv_init_rel_l2",
+        "init_rel_l2_ratio",
+        "clean_init_psnr",
+        "adv_init_psnr",
+        "clean_init_ssim",
+        "adv_init_ssim",
+        "clean_init_mae",
+        "adv_init_mae",
         "pred_shift_rel_l2",
         "init_shift_rel_l2",
         "delta_l2",
@@ -855,6 +1027,10 @@ def summarize_metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
     decomp_keys = [
         "clean_e_ran_l2", "clean_e_nul_l2", "clean_e_ran_frac", "clean_e_nul_frac",
         "adv_e_ran_l2", "adv_e_nul_l2", "adv_e_ran_frac", "adv_e_nul_frac",
+        "clean_init_e_ran_l2", "clean_init_e_nul_l2",
+        "clean_init_e_ran_frac", "clean_init_e_nul_frac",
+        "adv_init_e_ran_l2", "adv_init_e_nul_l2",
+        "adv_init_e_ran_frac", "adv_init_e_nul_frac",
     ]
 
     keys = keys + [k for k in decomp_keys if k in rows[0]]
@@ -964,10 +1140,25 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=40)
     parser.add_argument("--restarts", type=int, default=3)
     parser.add_argument("--no-random-start", action="store_true")
-    parser.add_argument("--objective", default="mse", choices=["mse", "shift", "hybrid"])
+    parser.add_argument(
+        "--objective", default="mse",
+        choices=["mse", "shift", "hybrid", "null", "null_shift", "null_hybrid"],
+        help="Attack target. mse/shift/hybrid reward total error (on a data-consistent "
+             "NSN this is solved trivially by range-space corruption). null/null_shift "
+             "reward only the null-space (structural/learned) error component; "
+             "null_hybrid additionally penalises range-space error so the budget is "
+             "spent on structural rather than trivial, data-consistent corruption.",
+    )
     parser.add_argument("--shift-weight", type=float, default=0.25)
     parser.add_argument("--attack-init-mode", default="exact", choices=["surrogate", "exact"])
     parser.add_argument("--eval-init-mode", default="exact", choices=["surrogate", "exact"])
+    parser.add_argument(
+        "--noise-subspace", default="measured", choices=["measured", "null"],
+        help="Subspace the adversarial noise is forced into. 'measured' (default) is "
+             "the standard sinogram-domain attack. 'null' projects the network-input "
+             "perturbation onto null(A_la) (image domain) so the noise attacks the "
+             "null-space component the NSN controls.",
+    )
     parser.add_argument("--split", default="test", choices=["train", "test"])
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -1070,6 +1261,7 @@ def main() -> None:
                 init_reconstructor=init_reconstructor,
                 projector=projector,
                 attack_init_mode=args.attack_init_mode,
+                noise_subspace=args.noise_subspace,
             )
             print("started caching of clean model outputs")
             with torch.no_grad():
@@ -1108,6 +1300,10 @@ def main() -> None:
                         # samples and under-attacks large ones).
                         eps_batch = eps_nominal * l2_norm_batch(y_clean)
 
+                        # Reference for null-space noise projection (no-op unless
+                        # --noise-subspace null); use the attack init mode here.
+                        adapter.prepare_clean(y_clean, mode=args.attack_init_mode)
+
                         attack_result = run_attack(
                             attack_name=attack_name,
                             adapter=adapter,
@@ -1120,6 +1316,9 @@ def main() -> None:
                         total_runtime += attack_result.runtime_sec
 
                         with torch.no_grad():
+                            # Re-cache the clean reference under the eval init mode so
+                            # the null-space projection at eval matches the attack.
+                            adapter.prepare_clean(y_clean, mode=args.eval_init_mode)
                             adv_pred, adv_init, y_adv = adapter.forward(attack_result.y_adv, mode=args.eval_init_mode)
 
                         batch_rows = evaluate_batch(
@@ -1146,6 +1345,14 @@ def main() -> None:
                                 e_ran_adv, e_nul_adv = decompose_error(
                                     adv_pred[j: j + 1] - x_gt[j: j + 1], radon
                                 )
+                                # Decomposition of the init-reconstruction error
+                                # (network input, before the NSN).
+                                e_ran_init_clean, e_nul_init_clean = decompose_error(
+                                    clean_init[j: j + 1] - x_gt[j: j + 1], radon
+                                )
+                                e_ran_init_adv, e_nul_init_adv = decompose_error(
+                                    adv_init[j: j + 1] - x_gt[j: j + 1], radon
+                                )
                                 fbp_delta = radon.fbp_la(attack_result.delta[j: j + 1])
                                 e_ran_fbp_d, _ = decompose_error(fbp_delta, radon)
                                 example_rows.append(
@@ -1162,6 +1369,10 @@ def main() -> None:
                                         "e_nul_clean": e_nul_clean.squeeze().numpy(),
                                         "e_ran_adv": e_ran_adv.squeeze().numpy(),
                                         "e_nul_adv": e_nul_adv.squeeze().numpy(),
+                                        "e_ran_init_clean": e_ran_init_clean.squeeze().numpy(),
+                                        "e_nul_init_clean": e_nul_init_clean.squeeze().numpy(),
+                                        "e_ran_init_adv": e_ran_init_adv.squeeze().numpy(),
+                                        "e_nul_init_adv": e_nul_init_adv.squeeze().numpy(),
                                         "proj_ran_fbp_delta": e_ran_fbp_d.squeeze().numpy(),
                                     }
                                 )
@@ -1181,6 +1392,7 @@ def main() -> None:
                     summary_metrics["eps_budget_mode"] = "per_sample_l2"
                     summary_metrics["attack_init_mode"] = args.attack_init_mode
                     summary_metrics["eval_init_mode"] = args.eval_init_mode
+                    summary_metrics["noise_subspace"] = args.noise_subspace
 
                     with open(result_dir / "summary.json", "w", encoding="utf-8") as f:
                         json.dump(summary_metrics, f, indent=2)
@@ -1217,6 +1429,14 @@ def main() -> None:
             decomp_dir = out_root / att_name / f"eps_{eps_nominal:g}"
             decomp_dir.mkdir(parents=True, exist_ok=True)
             save_decomposition_bar(decomp_dir, rows_by_model)
+            save_decomposition_bar(
+                decomp_dir,
+                rows_by_model,
+                clean_key="clean_init_e_nul_frac",
+                adv_key="adv_init_e_nul_frac",
+                fname="decomp_init_nul_frac.png",
+                title="Init null-space fraction of error (before NSN): clean vs adversarial (median)",
+            )
 
 
 if __name__ == "__main__":

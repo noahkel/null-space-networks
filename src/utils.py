@@ -92,6 +92,26 @@ def ssim(x: np.ndarray, y: np.ndarray) -> float:
     return float(sk_ssim(y, x, data_range=data_range))
 
 
+def mae(x: np.ndarray, y: np.ndarray) -> float:
+    """Mean absolute error between reconstruction x and reference y."""
+    return float(np.mean(np.abs(x - y)))
+
+
+def max_abs_err(x: np.ndarray, y: np.ndarray) -> float:
+    """Maximum absolute (L-inf) pixel error between x and y."""
+    return float(np.max(np.abs(x - y))) if x.size else float("nan")
+
+
+def nrmse(x: np.ndarray, y: np.ndarray) -> float:
+    """Root-mean-square error normalised by the reference data range
+    (y.max - y.min). Complements rel_l2 (which normalises by ‖y‖)."""
+    rmse = float(np.sqrt(np.mean((x - y) ** 2)))
+    data_range = float(y.max() - y.min())
+    if data_range <= 0.0:
+        data_range = 1.0
+    return rmse / data_range
+
+
 def ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
