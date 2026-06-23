@@ -25,7 +25,7 @@
   "success_mse_factor": 2.0,
   "spsa_samples": 16,
   "spsa_sigma": 0.01,
-  "stealth_weight": 1.0,
+  "stealth_weight": 0.0,
   "adam_lr": 0.01,
   "adam_patience": 50,
   "adam_tv_weight": 0.0,

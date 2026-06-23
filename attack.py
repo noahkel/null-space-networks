@@ -1170,7 +1170,7 @@ def main() -> None:
     parser.add_argument("--success-mse-factor", type=float, default=2.0)
     parser.add_argument("--spsa-samples", type=int, default=16)
     parser.add_argument("--spsa-sigma", type=float, default=1e-2)
-    parser.add_argument("--stealth-weight", type=float, default=1.0)
+    parser.add_argument("--stealth-weight", type=float, default=0.0)
     parser.add_argument("--adam-lr", type=float, default=0.01)
     parser.add_argument("--adam-patience", type=int, default=50)
     parser.add_argument("--adam-tv-weight", type=float, default=0.0)
