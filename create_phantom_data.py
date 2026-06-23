@@ -198,7 +198,7 @@ def main(shape: str) -> None:
     print("Generating data...")
     print("x_gt from generator")
     print("y from radon_full.forward_la")
-    print("y_delta with added noise")
+    print("y_delta = y with added noise")
     print("x_fbp from radon_full.fbp_la")
     print("x_pinv from radon.backward_la")
 

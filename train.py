@@ -81,7 +81,7 @@ def main(example, out_dir, data_dir, models):
     EPOCHS = 50
     BATCH_SIZE = 32
     LR = 1e-4
-    NUM_WORKERS = 4
+    NUM_WORKERS = 2
 
     # -------------------------
     # Load summary produced by create_ellipse_data.py
@@ -222,6 +222,7 @@ def main(example, out_dir, data_dir, models):
 
 def parse_list_arg(value: str) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
 if __name__ == "__main__":
     #Initialization of parameters
     parser = argparse.ArgumentParser()
@@ -232,11 +233,12 @@ if __name__ == "__main__":
                              "(e.g. ./data/0.01), containing summary.json and the "
                              "gt/sino/init-recon folders.")
     parser.add_argument("--models", type=str, default="resnet,nsn,dpnsn,dpnsn_res")
-    #Setup Args
+
     args = parser.parse_args()
     model_names = parse_list_arg(args.models)
     out_dir = Path(args.out_dir)
     data_dir = Path(args.data_dir)
     type = args.type
+    print("Successfully parsed args")
     main(example=type, out_dir=out_dir, data_dir=data_dir, models=model_names)
     print("Finished.")
