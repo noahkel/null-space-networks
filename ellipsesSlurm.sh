@@ -50,13 +50,13 @@ echo "finished test_radon.py at: $(date)"
 
 # ── Data Generation (MatrixRadonAdapter, matrix_mode=1) ──────────────────────
 
-#python -u create_ellipse_data.py --img_size $IMG_SIZE --noise 0.01 --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR
+python -u create_ellipse_data.py --img_size $IMG_SIZE --noise 0.01 --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR
 
 echo "Finished Data Generation at: $(date)"
 
 # ── Training (adapter chosen from summary.json matrix_mode) ──────────────────
 
-#python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR_NOISE --models resnet,nsn
+python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR_NOISE --models resnet,nsn
 
 echo "Finished Training at: $(date)"
 
@@ -73,7 +73,7 @@ EPS="0.01"
 for INIT in pinv; do
   python -u attack.py --type $TYPE --objective null --eps $EPS --alpha 0.5 --steps 200 \
     --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models nsn,resnet \
-    --init $INIT --attacks adam --norm l2 --tag ellipses_n0.0_realNoise
+    --init $INIT --attacks adam --norm l2 --tag ellipses_n0.01
 done
 echo "Finished Adversarial Attack at: $(date)"
 
