@@ -64,7 +64,7 @@ def detect_init_methods(data_dir: Path) -> List[str]:
     """Auto-detect available init-reconstruction folders in a data directory
     produced by create_ellipse_data.py (e.g. fbp, pinv, pinv_full)."""
     known = ["tv", "fbp", "lw", "pinv", "tikh", "pinv_full"]
-    return [m for m in known if (data_dir / m).is_dir()]
+    return [m for m in known if (data_dir / m).is_dir() and any((data_dir / m).glob("*.npy"))]
 
 
 def main(example, out_dir, data_dir, models):

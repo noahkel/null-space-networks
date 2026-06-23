@@ -236,6 +236,8 @@ def main(shape: str) -> None:
 
     subset = samples[:TV_SUBSET]
     #Skipping TV, Landweber Reconstructions
+    alpha_errors = None
+    best_alpha = None
     if False:
         print("Selecting TV alpha on a subset...")
         alpha_errors = {}
@@ -311,7 +313,7 @@ def main(shape: str) -> None:
         "mean_norm_y_minus_y_delta": float(y_diff_norms.mean()),
         "tv_alpha_grid": [float(a) for a in TV_ALPHA_GRID.tolist()],
         "tv_alpha_errors_subset": alpha_errors,
-        "tv_best_alpha": float(best_alpha),
+        "tv_best_alpha": float(best_alpha) if best_alpha is not None else None,
         "tv_iters_select": int(TV_ITERS_SELECT),
         "tv_iters_final": int(TV_ITERS_FINAL),
         "lw_iters": int(LW_ITERS),
