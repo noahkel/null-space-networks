@@ -940,7 +940,56 @@ def save_robustness_curve(
     plt.savefig(out_dir / f"robustness_{y_key}.png", dpi=150)
     plt.close(fig)
 
+def save_error_components_curve(
+    out_dir: Path,
+    curve_by_model: Dict[str, List[Dict]],
+    stat: str = "median",
+    fname: str = "error_components_clean_vs_adv.png",
+) -> None:
+    """Per-model curves of clean vs adversarial error magnitude against the attack
+    budget eps, split into the range and null-space components. One panel per model
+    (e.g. resnet, nsn); dashed = clean baseline, solid = adversarial; blue = range
+    component ‖e_ran‖, red = null component ‖e_nul‖.
 
+    Makes the NSN-vs-ResNet contrast explicit: the NSN's adversarial error grows in the
+    range component it passes through by design (data consistency), while the ResNet's
+    grows in the (hallucinated) null component. Uses the median by default so the small
+    ‖gt‖ / ‖y‖ outliers do not skew the curve, matching save_robustness_curve."""
+    present = [m for m in curve_by_model if curve_by_model[m]]
+    if not present:
+        return
+    c_ran, c_nul = "#1f77b4", "#d62728"
+    series = [
+        ("clean_e_ran_l2", "clean range", c_ran, "--", None),
+        ("clean_e_nul_l2", "clean null",  c_nul, "--", None),
+        ("adv_e_ran_l2",   "adv range",   c_ran, "-",  "o"),
+        ("adv_e_nul_l2",   "adv null",    c_nul, "-",  "o"),
+    ]
+    fig, axes = plt.subplots(1, len(present), figsize=(6 * len(present), 5), squeeze=False)
+    drew = False
+    for ax, model_name in zip(axes[0], present):
+        pts = sorted(curve_by_model[model_name], key=lambda p: p["eps"])
+        xs = [p["eps"] for p in pts]
+        for base, label, color, ls, marker in series:
+            ys = [p.get(f"{base}_{stat}", float("nan")) for p in pts]
+            if all(math.isnan(v) for v in ys):
+                continue
+            ax.plot(xs, ys, ls, marker=marker, color=color, lw=1.5, label=label)
+            drew = True
+        if len(xs) > 1 and min(xs) > 0:
+            ax.set_xscale("log")
+        ax.set_xlabel("Attack budget eps  (fraction of signal norm ‖y‖)")
+        ax.set_ylabel(f"‖error component‖  ({stat})")
+        ax.set_title(model_name)
+        ax.grid(True, which="both", alpha=0.3)
+        ax.legend(fontsize=8)
+    if not drew:
+        plt.close(fig)
+        return
+    fig.suptitle("Error components vs attack budget: clean (dashed) vs adversarial (solid)")
+    plt.tight_layout()
+    plt.savefig(out_dir / fname, dpi=150)
+    plt.close(fig)
 def save_decomposition_bar(
     out_dir: Path,
     rows_by_model: Dict[str, List[Dict]],
@@ -1425,6 +1474,8 @@ def main() -> None:
             save_scatter_plot(plot_dir, rows_by_model)
             save_robustness_curve(plot_dir, curve_rows[att_name], y_key="adv_rel_l2")
             save_robustness_curve(plot_dir, curve_rows[att_name], y_key="adv_psnr")
+            save_error_components_curve(plot_dir, curve_rows[att_name])
+
         for (att_name, eps_nominal), rows_by_model in decomp_by_eps.items():
             decomp_dir = out_root / att_name / f"eps_{eps_nominal:g}"
             decomp_dir.mkdir(parents=True, exist_ok=True)
