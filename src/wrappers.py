@@ -65,7 +65,7 @@ class NSN(nn.Module):
             Input image plus null-space correction.
         """
         res = self.unet(x)
-        x_nsn = self.radon.proj_null_image(res) #self.radon.fbp(self.radon.proj_nsn(self.radon.forward(res)))
+        x_nsn = self.radon.fbp(self.radon.proj_nsn(self.radon.forward(res))) #self.radon.proj_null_image(res) #self.radon.fbp(self.radon.proj_nsn(self.radon.forward(res)))
         return x + x_nsn
 
 

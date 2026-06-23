@@ -1,17 +1,17 @@
 #!/bin/bash
-#SBATCH --job-name=ellips0.0
+#SBATCH --job-name=ellips0.01
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --partition=all
-##SBATCH --nodelist=mp-gpu4-a100-1
+##SBATCH --nodelist=mp-gpu4-a6000-4
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=noah.keltsch@uibk.ac.at
 
 NTFY="c7021201_slurmjobs"
 REPO_DIR=/scratch/noah/Null-Space-Networks
-DATA_DIR=/scratch/noah/data/ellipses_out_matrices
+DATA_DIR=/scratch/noah/data/ellipses_out_matrices/0.01
 DATA_DIR_NOISE=/scratch/noah/data/ellipses_out_matrices/0.01
-MODEL_DIR=/scratch/noah/models_ellipses_matrices
+MODEL_DIR=/scratch/noah/models_ellipses_matrices/0.01
 
 cd $REPO_DIR
 mkdir -p logs
@@ -56,7 +56,7 @@ echo "Finished Data Generation at: $(date)"
 
 # ── Training (adapter chosen from summary.json matrix_mode) ──────────────────
 
-python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR_NOISE --models resnet,nsn
+python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR_NOISE --models nsn #resnet,nsn
 
 echo "Finished Training at: $(date)"
 
@@ -68,12 +68,12 @@ echo "Finished Training at: $(date)"
 # Sweep attack budgets as a fraction of the signal norm ||y|| (attack.py scales eps by
 # ||y|| at every noise level), so the robustness curve is comparable across noise levels.
 # --tag includes the noise level so runs do not overwrite each other.
-EPS="0.005,0.01,0.02,0.05,0.1,0.2"
+EPS="0.01"
 
-for INIT in fbp pinv tv lw; do
-  python -u attack.py --type $TYPE --eps $EPS --alpha 0.5 --steps 200 \
-    --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models resnet,nsn \
-    --init $INIT --attacks adam --norm l2 --tag ellipses_n0.01
+for INIT in pinv; do
+  python -u attack.py --type $TYPE --objective null --eps $EPS --alpha 0.5 --steps 200 \
+    --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models nsn \
+    --init $INIT --attacks adam --norm l2 --tag ellipses_n0.0_realNoise
 done
 echo "Finished Adversarial Attack at: $(date)"
 
