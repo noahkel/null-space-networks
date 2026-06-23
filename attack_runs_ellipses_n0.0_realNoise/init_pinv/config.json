@@ -1,7 +1,7 @@
 {
   "type": "ellipses",
   "init": "pinv",
-  "models": "nsn,res",
+  "models": "nsn,resnet",
   "attacks": "adam",
   "norm": "l2",
   "eps": "0.01",
