@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ellips0.00
+#SBATCH --job-name=ellips1%
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --partition=all
@@ -10,8 +10,8 @@
 NTFY="c7021201_slurmjobs"
 REPO_DIR=/scratch/noah/Null-Space-Networks
 DATA_DIR=/scratch/noah/data/ellipses_out_matrices
-DATA_DIR_NOISE=/scratch/noah/data/ellipses_out_matrices/0.0
-MODEL_DIR=/scratch/noah/models_ellipses_matrices/0.0
+DATA_DIR_NOISE=/scratch/noah/data/ellipses_out_matrices/0.01
+MODEL_DIR=/scratch/noah/models_ellipses_matrices/0.01
 
 cd $REPO_DIR
 mkdir -p logs
@@ -50,7 +50,7 @@ echo "finished test_radon.py at: $(date)"
 
 # ── Data Generation (MatrixRadonAdapter, matrix_mode=1) ──────────────────────
 
-python -u create_ellipse_data.py --img_size $IMG_SIZE --noise 0.00 --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR
+python -u create_ellipse_data.py --img_size $IMG_SIZE --noise 0.01 --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR
 
 echo "Finished Data Generation at: $(date)"
 
@@ -71,9 +71,12 @@ echo "Finished Training at: $(date)"
 EPS="0.01"
 
 for INIT in pinv; do
-  python -u attack2.py --type $TYPE --init pinv --eps $EPS --steps 40 \
+  python -u attack.py --type $TYPE --init pinv --eps $EPS --steps 40 \
     --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models nsn,resnet \
-    --init $INIT --norm l2
+    --init $INIT --attacks adam --norm l2 --tag extensive_Attack \
+    --objective-matrix mse,null,null_hybrid \
+    --shift-weight-sweep 0,0.25,1,4 \
+    --lipschitz --lipschitz-samples 8 --lipschitz-iters 10
 done
 echo "Finished Adversarial Attack at: $(date)"
 

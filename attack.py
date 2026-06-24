@@ -745,6 +745,24 @@ def evaluate_batch(
                 "adv_e_ran_frac": adv_e_ran_l2 / max(adv_e_l2, 1e-12),
                 "adv_e_nul_frac": adv_e_nul_l2 / max(adv_e_l2, 1e-12),
             })
+
+            #   ||proj_ran(A x_hat) - y|| / ||y||   on the measured angles.
+            # Damaging adversarial reconstructions stay measurement-consistent, i.e. the
+            # error lives in the small-singular-value / null subspace the data
+            # cannot constrain. A data-consistent model (NSN) should keep this
+            # near zero; an unconstrained ResNet need not.
+            with torch.no_grad():
+                def _consistency(pred_t, y_t):
+                    y_hat = radon.proj_ran(radon.forward(pred_t))
+                    num = float(torch.linalg.norm((y_hat - y_t).reshape(-1)).item())
+                    den = float(torch.linalg.norm(y_t.reshape(-1)).item())
+                    return num / max(den, 1e-12)
+                clean_consistency = _consistency(clean_pred[i: i + 1], clean_y[i: i + 1])
+                adv_consistency = _consistency(adv_pred[i: i + 1], adv_y[i: i + 1])
+            row.update({
+                "clean_consistency_rel": clean_consistency,
+                "adv_consistency_rel": adv_consistency,
+            })
             # Per-metric range/null decomposition. ‖e‖² = ‖e_ran‖² + ‖e_nul‖², but
             # SSIM/PSNR/MAE/… are non-additive and cannot be split from the L2 norms
             # above. Instead we rebuild the reconstruction that carries *only* the
@@ -1098,6 +1116,7 @@ def summarize_metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
         "clean_init_e_ran_frac", "clean_init_e_nul_frac",
         "adv_init_e_ran_l2", "adv_init_e_nul_l2",
         "adv_init_e_ran_frac", "adv_init_e_nul_frac",
+        "clean_consistency_rel", "adv_consistency_rel",
     ]
     # Per-metric range/null decomposition emitted by evaluate_batch: clean/adv ×
     # range/null × {rel_l2,psnr,ssim,mae,nrmse,max_err}. Aggregated like everything
@@ -1129,7 +1148,14 @@ def run_attack(
     clean_pred: torch.Tensor,
     args,
     eps,
+    objective=None,
+    shift_weight=None,
 ) -> AttackResult:
+    # objective / shift_weight default to the CLI values but can be overridden so
+    # the channel-matrix (P3) and shift-weight-sweep (P1) analyses can reuse the
+    # exact same attack machinery with a different target.
+    objective = args.objective if objective is None else objective
+    shift_weight = args.shift_weight if shift_weight is None else shift_weight
     if attack_name == "fgsm":
         return fgsm_attack(
             adapter=adapter,
@@ -1138,8 +1164,8 @@ def run_attack(
             clean_pred=clean_pred,
             eps=eps,
             norm=args.norm,
-            objective=args.objective,
-            shift_weight=args.shift_weight,
+            objective=objective,
+            shift_weight=shift_weight,
             stealth_weight=args.stealth_weight,
         )
 
@@ -1154,8 +1180,8 @@ def run_attack(
             steps=args.steps,
             restarts=args.restarts,
             norm=args.norm,
-            objective=args.objective,
-            shift_weight=args.shift_weight,
+            objective=objective,
+            shift_weight=shift_weight,
             random_start=not args.no_random_start,
             stealth_weight=args.stealth_weight,
         )
@@ -1172,8 +1198,8 @@ def run_attack(
             samples=args.spsa_samples,
             sigma=args.spsa_sigma,
             norm=args.norm,
-            objective=args.objective,
-            shift_weight=args.shift_weight,
+            objective=objective,
+            shift_weight=shift_weight,
             stealth_weight=args.stealth_weight,
         )
 
@@ -1188,14 +1214,439 @@ def run_attack(
             lr=args.adam_lr,
             scheduler_patience=args.adam_patience,
             norm=args.norm,
-            objective=args.objective,
-            shift_weight=args.shift_weight,
+            objective=objective,
+            shift_weight=shift_weight,
             tv_weight=args.adam_tv_weight,
             consistency_weight=args.adam_consistency_weight,
             stealth_weight=args.stealth_weight,
         )
 
     raise ValueError(f"Unknown attack '{attack_name}'")
+
+
+
+def _median_of(rows: List[Dict[str, float]], key: str) -> float:
+    vals = [r[key] for r in rows if key in r]
+    return float(np.median(vals)) if vals else float("nan")
+
+
+def build_clean_cache(adapter: ModelAttackAdapter, loader, max_samples: int, device) -> List[Tuple]:
+    """Cache (x_gt, x_init, y_clean, clean_pred) for the first max_samples examples.
+    Mirrors the clean-caching block in main() so the analyses below operate on the
+    exact same inputs as the primary benchmark."""
+    cache: List[Tuple] = []
+    n = 0
+    with torch.no_grad():
+        for x_gt, x_init, y_delta in loader:
+            x_gt = to_4d(x_gt).to(device)
+            x_init = to_4d(x_init).to(device)
+            y_delta = to_4d(y_delta).to(device)
+            y_clean = adapter.projector(y_delta)
+            clean_pred = adapter.model(x_init, y_clean)
+            cache.append((x_gt, x_init, y_clean, clean_pred))
+            n += x_gt.shape[0]
+            if n >= max_samples:
+                break
+    return cache
+
+
+def attack_over_cache(
+    adapter: ModelAttackAdapter,
+    clean_cache: List[Tuple],
+    radon,
+    args,
+    attack_name: str,
+    eps_nominal: float,
+    objective: str,
+    shift_weight: float,
+    max_samples: int,
+) -> List[Dict[str, float]]:
+    """Run one attack (given objective/shift_weight) over the cached clean batches
+    and return the pooled per-sample evaluation rows. No image dumping - just the
+    metrics needed to aggregate channel energies."""
+    rows: List[Dict[str, float]] = []
+    processed = 0
+    for x_gt, clean_init, y_clean, clean_pred in clean_cache:
+        if processed >= max_samples:
+            break
+        eps_batch = eps_nominal * l2_norm_batch(y_clean)
+        adapter.prepare_clean(y_clean, mode=args.attack_init_mode)
+        result = run_attack(
+            attack_name=attack_name,
+            adapter=adapter,
+            x_gt=x_gt,
+            y_clean=y_clean,
+            clean_pred=clean_pred,
+            args=args,
+            eps=eps_batch,
+            objective=objective,
+            shift_weight=shift_weight,
+        )
+        with torch.no_grad():
+            adapter.prepare_clean(y_clean, mode=args.eval_init_mode)
+            adv_pred, adv_init, y_adv = adapter.forward(result.y_adv, mode=args.eval_init_mode)
+        rows.extend(evaluate_batch(
+            x_gt=x_gt,
+            clean_init=clean_init,
+            clean_y=y_clean,
+            clean_pred=clean_pred,
+            adv_init=adv_init,
+            adv_y=y_adv,
+            adv_pred=adv_pred,
+            delta=result.delta,
+            success_rel_l2_factor=args.success_rel_l2_factor,
+            success_mse_factor=args.success_mse_factor,
+            radon=radon,
+        ))
+        processed += x_gt.shape[0]
+    return rows
+
+
+def save_null_growth_headline(
+    out_dir: Path,
+    rows_by_model: Dict[str, List[Dict]],
+    eps: float,
+    attack_name: str,
+) -> None:
+    """P2 headline: for each model, the null-space error magnitude ||e_nul|| clean vs
+    adversarial, with the adversarial range floor ||e_ran|| shown alongside. The
+    growth of the null channel is the fair robustness signal; the range floor is the
+    shared inversion error every data-consistent method carries."""
+    models = [m for m in rows_by_model if rows_by_model[m]]
+    if not models:
+        return
+    clean_nul = [_median_of(rows_by_model[m], "clean_e_nul_l2") for m in models]
+    adv_nul = [_median_of(rows_by_model[m], "adv_e_nul_l2") for m in models]
+    adv_ran = [_median_of(rows_by_model[m], "adv_e_ran_l2") for m in models]
+    if all(math.isnan(v) for v in clean_nul + adv_nul):
+        return
+    x = np.arange(len(models))
+    w = 0.27
+    fig, ax = plt.subplots(figsize=(1.7 * len(models) + 3, 5))
+    ax.bar(x - w, clean_nul, w, label="||e_nul|| clean", color="#9ecae1")
+    ax.bar(x, adv_nul, w, label="||e_nul|| adversarial", color="#d62728")
+    ax.bar(x + w, adv_ran, w, label="||e_ran|| adv (shared floor)", color="#7f7f7f", alpha=0.7)
+    for xi, c, a in zip(x, clean_nul, adv_nul):
+        if not (math.isnan(c) or math.isnan(a)):
+            ax.annotate("d_null=%+.3g" % (a - c), (xi - w / 2, max(c, a)),
+                        textcoords="offset points", xytext=(0, 4),
+                        ha="center", fontsize=8, color="#d62728")
+    ax.set_xticks(x)
+    ax.set_xticklabels(models)
+    ax.set_ylabel("||error component||  (median)")
+    ax.set_title("Headline - null-space error growth under attack "
+                 "(%s, eps=%g)\nfair signal = growth of ||e_nul||; ||e_ran|| is the shared floor"
+                 % (attack_name, eps), fontsize=9)
+    ax.legend(fontsize=8)
+    ax.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(out_dir / "headline_null_growth.png", dpi=150)
+    plt.close(fig)
+
+
+def save_consistency_plot(
+    out_dir: Path,
+    rows_by_model: Dict[str, List[Dict]],
+    eps: float,
+) -> None:
+    """P4: measurement (data) consistency ||proj_ran(A x_hat) - y||/||y||, clean vs adv,
+    per model. Low/flat under attack => the adversarial error hides in the null /
+    small-singular-value subspace (the literature finding), which is exactly why a
+    null-targeted attack/metric is the fair lens."""
+    models = [m for m in rows_by_model if rows_by_model[m]]
+    if not models:
+        return
+    clean_c = [_median_of(rows_by_model[m], "clean_consistency_rel") for m in models]
+    adv_c = [_median_of(rows_by_model[m], "adv_consistency_rel") for m in models]
+    if all(math.isnan(v) for v in clean_c + adv_c):
+        return
+    x = np.arange(len(models))
+    w = 0.38
+    fig, ax = plt.subplots(figsize=(1.6 * len(models) + 3, 5))
+    ax.bar(x - w / 2, clean_c, w, label="clean", color="#1D9E75")
+    ax.bar(x + w / 2, adv_c, w, label="adversarial", color="#D4537E")
+    ax.set_xticks(x)
+    ax.set_xticklabels(models)
+    ax.set_ylabel("||proj_ran(A x_hat) - y|| / ||y||  (median)")
+    ax.set_title("Measurement consistency: clean vs adversarial (eps=%g)\n"
+                 "stays low => adversarial error lives in the null subspace" % eps, fontsize=9)
+    ax.legend(fontsize=8)
+    ax.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(out_dir / "measurement_consistency.png", dpi=150)
+    plt.close(fig)
+
+
+def save_attack_channel_matrix(
+    out_dir: Path,
+    matrix_res: Dict[str, Dict[str, Dict[str, float]]],
+    eps: float,
+) -> None:
+    """P3: heatmaps of adversarial ||e_nul|| (structural) and ||e_ran|| (floor) for the
+    model x attack-objective grid. Reading a row shows how a model responds to its
+    own adaptive (null-targeted) attack vs the trivial mse attack; reading a column
+    compares models under the same objective."""
+    models = list(matrix_res)
+    if not models:
+        return
+    objs = list(matrix_res[models[0]])
+    for chan, label in (("nul", "||e_nul||  (structural / learned channel)"),
+                        ("ran", "||e_ran||  (range floor)")):
+        M = np.array([[matrix_res[m][o][chan] for o in objs] for m in models], dtype=float)
+        fig, ax = plt.subplots(figsize=(1.7 * len(objs) + 2.5, 1.0 * len(models) + 2.5))
+        im = ax.imshow(M, cmap="magma", aspect="auto")
+        ax.set_xticks(range(len(objs)))
+        ax.set_xticklabels(objs, rotation=30, ha="right")
+        ax.set_yticks(range(len(models)))
+        ax.set_yticklabels(models)
+        for r in range(len(models)):
+            for c in range(len(objs)):
+                ax.text(c, r, "%.3g" % M[r, c], ha="center", va="center",
+                        color="white", fontsize=8)
+        ax.set_title("Adversarial %s\nattack objective x model (median, eps=%g)"
+                     % (label, eps), fontsize=9)
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        plt.tight_layout()
+        plt.savefig(out_dir / ("channel_matrix_%s.png" % chan), dpi=150)
+        plt.close(fig)
+
+
+def save_shift_weight_sweep(
+    out_dir: Path,
+    sweep_res: Dict[str, List[Dict[str, float]]],
+    objective: str,
+    eps: float,
+) -> None:
+    """P1: null (solid) and range (dashed) error-channel magnitude vs the hybrid
+    shift-weight, one colour per model. Locates the weight that maximises structural
+    (null) damage while suppressing the trivial range channel."""
+    models = [m for m in sweep_res if sweep_res[m]]
+    if not models:
+        return
+    colors = plt.cm.tab10.colors
+    fig, ax = plt.subplots(figsize=(7.5, 5))
+    drew = False
+    for i, m in enumerate(models):
+        pts = sorted(sweep_res[m], key=lambda p: p["w"])
+        xs = [p["w"] for p in pts]
+        nul = [p["nul"] for p in pts]
+        ran = [p["ran"] for p in pts]
+        col = colors[i % len(colors)]
+        ax.plot(xs, nul, "-o", color=col, lw=1.6, label="%s ||e_nul||" % m)
+        ax.plot(xs, ran, "--s", color=col, lw=1.2, alpha=0.7, label="%s ||e_ran||" % m)
+        drew = True
+    if not drew:
+        plt.close(fig)
+        return
+    ax.set_xlabel("shift-weight  (range-error penalty in the hybrid objective)")
+    ax.set_ylabel("||error component||  (median)")
+    ax.set_title("P1 - shift-weight sweep (%s, eps=%g)\n"
+                 "solid = null (structural), dashed = range (floor)" % (objective, eps), fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=7, ncol=max(1, len(models)))
+    plt.tight_layout()
+    plt.savefig(out_dir / "shift_weight_sweep.png", dpi=150)
+    plt.close(fig)
+
+
+def estimate_lipschitz_nullspace(
+    model: nn.Module,
+    adapter: ModelAttackAdapter,
+    clean_cache: List[Tuple],
+    radon,
+    n_samples: int = 4,
+    n_iter: int = 8,
+) -> Dict[str, float]:
+    """P6 - operator-norm (local Lipschitz) estimate of the *learned correction*
+    restricted to the null space of A_la.
+
+    We linearise the correction  g(x) = f(x) - x  (= P_null(UNet(x)) for the NSN,
+    UNet(x) for the ResNet) around the clean init x0, restrict both input and output
+    to null(A_la) with the same projector P = radon.proj_null_image, and estimate the
+    largest singular value of  M = P . J_g . P  by power iteration:
+
+        d <- P d / ||.|| ;   repeat:  u = M d ,  d = M^T u / ||.|| ;   sigma ~ ||M d||.
+
+    This is an attack-independent, architecture-comparable measure of how strongly a
+    null-space input perturbation can be amplified into null-space output error - the
+    quantity that governs worst-case robustness of the learned channel. Falls back to
+    a finite-difference random-direction lower bound if double-backward is unavailable.
+    """
+    device = next(model.parameters()).device
+    proj = radon.proj_null_image
+
+    samples: List[float] = []
+    count = 0
+    for x_gt, x_init, y_clean, clean_pred in clean_cache:
+        B = x_init.shape[0]
+        for b in range(B):
+            if count >= n_samples:
+                break
+            x0 = x_init[b: b + 1].detach()
+            y0 = y_clean[b: b + 1].detach()
+
+            def G(x: torch.Tensor) -> torch.Tensor:
+                # learned correction, output restricted to the null space
+                return proj(model(x, y0) - x)
+
+            sigma = float("nan")
+            try:
+                d = proj(torch.randn_like(x0))
+                d = d / (torch.linalg.norm(d.reshape(-1)) + 1e-12)
+                for _ in range(n_iter):
+                    _, u = torch.autograd.functional.jvp(G, x0, d, create_graph=False, strict=False)
+                    u = proj(u)
+                    _, w = torch.autograd.functional.vjp(G, x0, u, create_graph=False, strict=False)
+                    w = proj(w)
+                    nw = torch.linalg.norm(w.reshape(-1))
+                    if nw < 1e-12:
+                        break
+                    d = w / nw
+                _, u = torch.autograd.functional.jvp(G, x0, d, create_graph=False, strict=False)
+                sigma = float(torch.linalg.norm(proj(u).reshape(-1)).item())
+            except Exception:
+                # finite-difference lower bound over a few random null directions
+                best = 0.0
+                with torch.no_grad():
+                    g0 = G(x0)
+                    scale = float(torch.linalg.norm(x0.reshape(-1)).item()) / math.sqrt(x0.numel())
+                    h = 1e-3 * max(scale, 1e-6)
+                    for _ in range(max(4, n_iter)):
+                        d = proj(torch.randn_like(x0))
+                        d = d / (torch.linalg.norm(d.reshape(-1)) + 1e-12)
+                        diff = proj((G(x0 + h * d) - g0) / h)
+                        best = max(best, float(torch.linalg.norm(diff.reshape(-1)).item()))
+                sigma = best
+
+            if not math.isnan(sigma):
+                samples.append(sigma)
+            count += 1
+        if count >= n_samples:
+            break
+
+    if not samples:
+        return {"mean": float("nan"), "max": float("nan"), "std": float("nan"), "n": 0}
+    return {
+        "mean": float(np.mean(samples)),
+        "max": float(np.max(samples)),
+        "std": float(np.std(samples)),
+        "n": len(samples),
+    }
+
+
+def save_lipschitz_plot(out_dir: Path, lip_res: Dict[str, Dict[str, float]]) -> None:
+    """P6 bar chart: null-restricted local Lipschitz constant per model (mean +/- std,
+    max marked). Higher => the learned channel amplifies null-space perturbations more,
+    i.e. is intrinsically less robust there - independent of any particular attack."""
+    models = [m for m in lip_res if lip_res[m].get("n", 0) > 0]
+    if not models:
+        return
+    means = [lip_res[m]["mean"] for m in models]
+    stds = [lip_res[m]["std"] for m in models]
+    maxes = [lip_res[m]["max"] for m in models]
+    x = np.arange(len(models))
+    fig, ax = plt.subplots(figsize=(1.6 * len(models) + 3, 5))
+    ax.bar(x, means, 0.5, yerr=stds, capsize=4, color="#4C72B0", label="mean +/- std")
+    ax.scatter(x, maxes, color="#C44E52", zorder=3, label="max")
+    ax.set_xticks(x)
+    ax.set_xticklabels(models)
+    ax.set_ylabel("||P.J_g.P||  (null-restricted local Lipschitz)")
+    ax.set_title("P6 - null-restricted Lipschitz of the learned correction\n"
+                 "operator norm of P_null . J(f-x) . P_null (power iteration)", fontsize=9)
+    ax.legend(fontsize=8)
+    ax.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(out_dir / "lipschitz_nullspace.png", dpi=150)
+    plt.close(fig)
+
+
+def run_extra_analyses(
+    args,
+    radon,
+    beta: float,
+    device,
+    loader,
+    init_reconstructor: "InitReconstructor",
+    projector: Callable[[torch.Tensor], torch.Tensor],
+    out_root: Path,
+    example: str,
+    init_method: str,
+    noise: str,
+) -> None:
+    """Drive the opt-in P1/P3/P6 analyses. Loops each model once, builds one clean
+    cache, and runs whichever analyses are enabled. P2/P4 plots are produced from the
+    primary run's per-eps rows in main() and do not need this driver."""
+    matrix_objs = parse_list_arg(args.objective_matrix) if args.objective_matrix else []
+    sweep_weights = parse_float_list(args.shift_weight_sweep) if args.shift_weight_sweep else []
+    do_lip = bool(args.lipschitz)
+    if not (matrix_objs or sweep_weights or do_lip):
+        return
+
+    eps_list = parse_float_list(args.eps)
+    eps_nominal = args.analysis_eps if args.analysis_eps is not None else max(eps_list)
+    attack_names = parse_list_arg(args.attacks)
+    attack_name = args.analysis_attack or attack_names[0]
+    max_samples = args.analysis_max_samples if args.analysis_max_samples is not None else args.max_samples
+    model_names = parse_list_arg(args.models)
+
+    matrix_res: Dict[str, Dict[str, Dict[str, float]]] = {}
+    sweep_res: Dict[str, List[Dict[str, float]]] = {}
+    lip_res: Dict[str, Dict[str, float]] = {}
+
+    for model_name in model_names:
+        print("[analysis] loading " + model_name)
+        model = load_model_checkpoint(
+            example=example, init_method=init_method, model_name=model_name,
+            radon=radon, beta=beta, device=device, model_dir=args.model_dir, noise=noise,
+        )
+        adapter = ModelAttackAdapter(
+            model=model, init_reconstructor=init_reconstructor, projector=projector,
+            attack_init_mode=args.attack_init_mode, noise_subspace=args.noise_subspace,
+        )
+        cache = build_clean_cache(adapter, loader, max_samples, device)
+
+        if matrix_objs:
+            d: Dict[str, Dict[str, float]] = {}
+            for obj in matrix_objs:
+                rows = attack_over_cache(adapter, cache, radon, args, attack_name,
+                                         eps_nominal, obj, args.shift_weight, max_samples)
+                d[obj] = {"ran": _median_of(rows, "adv_e_ran_l2"),
+                          "nul": _median_of(rows, "adv_e_nul_l2")}
+                print("[analysis][matrix] %s obj=%s nul=%.4g ran=%.4g"
+                      % (model_name, obj, d[obj]["nul"], d[obj]["ran"]))
+            matrix_res[model_name] = d
+
+        if sweep_weights:
+            lst: List[Dict[str, float]] = []
+            for wv in sweep_weights:
+                rows = attack_over_cache(adapter, cache, radon, args, attack_name,
+                                         eps_nominal, args.objective, wv, max_samples)
+                lst.append({"w": wv, "ran": _median_of(rows, "adv_e_ran_l2"),
+                            "nul": _median_of(rows, "adv_e_nul_l2")})
+                print("[analysis][sweep] %s w=%g nul=%.4g ran=%.4g"
+                      % (model_name, wv, lst[-1]["nul"], lst[-1]["ran"]))
+            sweep_res[model_name] = lst
+
+        if do_lip:
+            lip_res[model_name] = estimate_lipschitz_nullspace(
+                model, adapter, cache, radon,
+                n_samples=args.lipschitz_samples, n_iter=args.lipschitz_iters,
+            )
+            print("[analysis][lipschitz] %s mean=%.4g max=%.4g"
+                  % (model_name, lip_res[model_name]["mean"], lip_res[model_name]["max"]))
+
+    analysis_dir = out_root / "analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    if matrix_res:
+        save_attack_channel_matrix(analysis_dir, matrix_res, eps_nominal)
+    if sweep_res:
+        save_shift_weight_sweep(analysis_dir, sweep_res, args.objective, eps_nominal)
+    if lip_res:
+        save_lipschitz_plot(analysis_dir, lip_res)
+    with open(analysis_dir / "analysis_summary.json", "w", encoding="utf-8") as f:
+        json.dump({"eps": eps_nominal, "attack": attack_name,
+                   "matrix": matrix_res, "shift_weight_sweep": sweep_res,
+                   "lipschitz_nullspace": lip_res}, f, indent=2)
 
 
 def main() -> None:
@@ -1246,6 +1697,29 @@ def main() -> None:
     parser.add_argument("--spsa-samples", type=int, default=16)
     parser.add_argument("--spsa-sigma", type=float, default=1e-2)
     parser.add_argument("--stealth-weight", type=float, default=0.0)
+    # --- opt-in extra analyses (P1 sweep, P3 channel matrix, P6 Lipschitz) ---
+    parser.add_argument(
+        "--objective-matrix", default="",
+        help="P3: comma-separated objectives to sweep for the model x objective channel "
+             "matrix, e.g. 'mse,null,null_hybrid'. Empty disables the matrix.",
+    )
+    parser.add_argument(
+        "--shift-weight-sweep", default="",
+        help="P1: comma-separated shift-weight values to sweep for the hybrid/null_hybrid "
+             "objective, e.g. '0,0.25,1,4'. Empty disables the sweep.",
+    )
+    parser.add_argument("--lipschitz", action="store_true",
+                        help="P6: estimate the null-restricted local Lipschitz constant of each model.")
+    parser.add_argument("--lipschitz-samples", type=int, default=4,
+                        help="P6: number of examples to average the Lipschitz estimate over.")
+    parser.add_argument("--lipschitz-iters", type=int, default=8,
+                        help="P6: power-iteration steps for the Lipschitz estimate.")
+    parser.add_argument("--analysis-eps", type=float, default=None,
+                        help="Single attack budget used by the P1/P3 analyses (default: max of --eps).")
+    parser.add_argument("--analysis-attack", default=None,
+                        help="Attack used by the P1/P3 analyses (default: first of --attacks).")
+    parser.add_argument("--analysis-max-samples", type=int, default=None,
+                        help="Sample budget for the P1/P3 analyses (default: --max-samples).")
     parser.add_argument("--adam-lr", type=float, default=0.01)
     parser.add_argument("--adam-patience", type=int, default=50)
     parser.add_argument("--adam-tv-weight", type=float, default=0.0)
@@ -1514,6 +1988,25 @@ def main() -> None:
                 fname="decomp_init_nul_frac.png",
                 title="Init null-space fraction of error (before NSN): clean vs adversarial (median)",
             )
+            # P2 headline (null-channel growth + shared range floor) and
+            # P4 measurement-consistency, both straight from the primary run's rows.
+            save_null_growth_headline(decomp_dir, rows_by_model, eps_nominal, att_name)
+            save_consistency_plot(decomp_dir, rows_by_model, eps_nominal)
+
+        # P1 / P3 / P6 - opt-in analyses that need extra attack runs or model access.
+        run_extra_analyses(
+            args=args,
+            radon=radon,
+            beta=beta,
+            device=device,
+            loader=loader,
+            init_reconstructor=init_reconstructor,
+            projector=projector,
+            out_root=out_root,
+            example=example,
+            init_method=init_method,
+            noise=i,
+        )
 
 
 if __name__ == "__main__":
