@@ -745,6 +745,24 @@ def evaluate_batch(
                 "adv_e_ran_frac": adv_e_ran_l2 / max(adv_e_l2, 1e-12),
                 "adv_e_nul_frac": adv_e_nul_l2 / max(adv_e_l2, 1e-12),
             })
+            # Per-metric range/null decomposition. ‖e‖² = ‖e_ran‖² + ‖e_nul‖², but
+            # SSIM/PSNR/MAE/… are non-additive and cannot be split from the L2 norms
+            # above. Instead we rebuild the reconstruction that carries *only* the
+            # range (x_gt + e_ran) resp. null (x_gt + e_nul) component of the error and
+            # score it with the same image metrics as the full prediction. This shows
+            # how much each error subspace degrades each metric on its own — e.g. how
+            # much of the SSIM/PSNR drop is structural (null) vs data-consistent (range).
+            for cond, e_ran_t, e_nul_t in (("clean", e_ran_c, e_nul_c), ("adv", e_ran_a, e_nul_a)):
+                for sub, e_t in (("ran", e_ran_t), ("nul", e_nul_t)):
+                    part = gt_np + e_t.numpy().reshape(gt_np.shape)
+                    row.update({
+                        f"{cond}_rel_l2_{sub}": rel_l2_np(part, gt_np),
+                        f"{cond}_psnr_{sub}": psnr(part, gt_np),
+                        f"{cond}_ssim_{sub}": ssim(part, gt_np),
+                        f"{cond}_mae_{sub}": mae(part, gt_np),
+                        f"{cond}_nrmse_{sub}": nrmse(part, gt_np),
+                        f"{cond}_max_err_{sub}": max_abs_err(part, gt_np),
+                    })
 
             # Decompose the *init-reconstruction* error too, so we can see how the
             # attack distributes range vs null energy in the network input,
@@ -807,7 +825,7 @@ def save_examples(
                 e_ran=row["e_ran_init_clean"],
                 e_nul=row["e_nul_init_clean"],
                 out_path=out_dir / f"decomp_init_clean_{idx:03d}.png",
-                title=f"Clean — init error decomposition, before NSN (example {idx})",
+                title=f"Clean — init error decomposition, before Network (example {idx})",
             )
             visualise_decomposition(
                 gt=row["x_gt"],
@@ -1081,7 +1099,15 @@ def summarize_metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
         "adv_init_e_ran_l2", "adv_init_e_nul_l2",
         "adv_init_e_ran_frac", "adv_init_e_nul_frac",
     ]
-
+    # Per-metric range/null decomposition emitted by evaluate_batch: clean/adv ×
+    # range/null × {rel_l2,psnr,ssim,mae,nrmse,max_err}. Aggregated like everything
+    # else; absent (and silently skipped) when the attack runs without a radon op.
+    decomp_keys += [
+        f"{cond}_{metric}_{sub}"
+        for cond in ("clean", "adv")
+        for metric in ("rel_l2", "psnr", "ssim", "mae", "nrmse", "max_err")
+        for sub in ("ran", "nul")
+    ]
     keys = keys + [k for k in decomp_keys if k in rows[0]]
     for key in keys:
         values = [float(row[key]) for row in rows]
