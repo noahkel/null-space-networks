@@ -71,9 +71,9 @@ echo "Finished Training at: $(date)"
 EPS="0.01"
 
 for INIT in pinv; do
-  python -u attack.py --type $TYPE --objective null --eps $EPS --alpha 0.5 --steps 200 \
+  python -u attack2.py --type $TYPE --init pinv --eps $EPS --steps 40 \
     --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models nsn,resnet \
-    --init $INIT --attacks adam --norm l2 --tag ellipses_n0.00
+    --init $INIT --norm l2
 done
 echo "Finished Adversarial Attack at: $(date)"
 
