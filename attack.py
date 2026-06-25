@@ -206,35 +206,13 @@ class ModelAttackAdapter:
         model: nn.Module,
         init_reconstructor: InitReconstructor,
         projector: Callable[[torch.Tensor], torch.Tensor],
-        attack_init_mode: str,
-        noise_subspace: str = "measured",
+        attack_init_mode: str
     ):
         self.model = model
         self.init_reconstructor = init_reconstructor
         self.projector = projector
         self.attack_init_mode = attack_init_mode
-        # "measured" -> standard sinogram-domain attack (current behaviour);
-        # "null"     -> force the network-input perturbation into null(A_la),
-        #               so the adversarial noise attacks the null-space component.
-        self.noise_subspace = noise_subspace
         self._clean_init_ref: Optional[torch.Tensor] = None
-
-    def prepare_clean(self, y_clean: torch.Tensor, mode: Optional[str] = None) -> None:
-        """Cache the clean init reconstruction used as the reference point for the
-        null-space noise projection. Must be called once per batch (with the init
-        mode that will be used) before attacking / evaluating. A no-op unless
-        noise_subspace == 'null'."""
-        if self.noise_subspace != "null":
-            self._clean_init_ref = None
-            return
-        mode = mode or self.attack_init_mode
-        with torch.no_grad():
-            y_c = self.projector(y_clean)
-            if mode == "surrogate":
-                ref = self.init_reconstructor.surrogate(y_c)
-            else:
-                ref = self.init_reconstructor.exact(y_c)
-        self._clean_init_ref = ref.detach()
 
     def build_inputs(self, y_adv: torch.Tensor, mode: Optional[str] = None, project: bool = True,) -> Tuple[torch.Tensor, torch.Tensor]:
         mode = mode or self.attack_init_mode
@@ -248,19 +226,6 @@ class ModelAttackAdapter:
             x_init = x_exact + (x_surrogate - x_surrogate.detach())
         else:
             raise ValueError(f"Unknown init mode '{mode}'")
-
-        # Null-space noise projection: keep only the component of the input
-        # perturbation (x_init - clean_init) that lives in null(A_la). The
-        # range component is data-determined and passed through unchanged by the
-        # NSN, so confining the perturbation to the null space forces the attack
-        # to target exactly the component the network is responsible for.
-        # Differentiable: radon.proj_null_image is an SVD/CG projection, so the
-        # gradient still flows back to y_adv.
-        if self.noise_subspace == "null" and self._clean_init_ref is not None:
-            radon = self.init_reconstructor.radon
-            ref = self._clean_init_ref.to(device=x_init.device, dtype=x_init.dtype)
-            d_null = radon.proj_null_image(x_init - ref)
-            x_init = ref + d_null
 
         return x_init, y_adv
 
@@ -1601,7 +1566,7 @@ def run_extra_analyses(
         )
         adapter = ModelAttackAdapter(
             model=model, init_reconstructor=init_reconstructor, projector=projector,
-            attack_init_mode=args.attack_init_mode, noise_subspace=args.noise_subspace,
+            attack_init_mode=args.attack_init_mode,
         )
         cache = build_clean_cache(adapter, loader, max_samples, device)
 
@@ -1810,7 +1775,6 @@ def main() -> None:
                 init_reconstructor=init_reconstructor,
                 projector=projector,
                 attack_init_mode=args.attack_init_mode,
-                noise_subspace=args.noise_subspace,
             )
             print("started caching of clean model outputs")
             with torch.no_grad():
@@ -1941,7 +1905,6 @@ def main() -> None:
                     summary_metrics["eps_budget_mode"] = "per_sample_l2"
                     summary_metrics["attack_init_mode"] = args.attack_init_mode
                     summary_metrics["eval_init_mode"] = args.eval_init_mode
-                    summary_metrics["noise_subspace"] = args.noise_subspace
 
                     with open(result_dir / "summary.json", "w", encoding="utf-8") as f:
                         json.dump(summary_metrics, f, indent=2)

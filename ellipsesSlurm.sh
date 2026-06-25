@@ -9,9 +9,12 @@
 
 NTFY="c7021201_slurmjobs"
 REPO_DIR=/scratch/noah/Null-Space-Networks
-DATA_DIR=/scratch/noah/data/ellipses_out_matrices
-DATA_DIR_NOISE=/scratch/noah/data/ellipses_out_matrices/0.01
-MODEL_DIR=/scratch/noah/models_ellipses_matrices/0.01
+# Base folders. Each noise level lives in its own subfolder named str(<noise>),
+# exactly as create_phantom_data.py writes it (e.g. 0.0, 0.01, 0.02, 0.05):
+#   data:   $DATA_BASE/<noise>/{gt,sino,summary.json}
+#   models: $MODEL_BASE/<noise>/init_<init>/checkpoints/<model>_best.pt
+DATA_BASE=/scratch/noah/data/ellipses_out_matrices
+MODEL_BASE=/scratch/noah/models_ellipses_matrices
 
 cd $REPO_DIR
 mkdir -p logs
@@ -20,14 +23,14 @@ export PYTHONPATH=/scratch/noah/Null-Space-Networks:$PYTHONPATH
 curl -s -d "Job $SLURM_JOB_ID ($SLURM_JOB_NAME) started on $SLURMD_NODENAME" \
      "https://ntfy.sh/$NTFY" &
 
-# ── Environment setup ────────────────────────────────────────────────────────
+# -- Environment setup --------------------------------------------------------
 module purge
 module load anaconda/anaconda3
 module load cuda/12.5
 source ~/.bashrc
 conda activate data_prox2
 
-# ── Diagnostics ──────────────────────────────────────────────────────────────
+# -- Diagnostics --------------------------------------------------------------
 echo "============================================"
 echo "Job ID:        $SLURM_JOB_ID"
 echo "Node:          $SLURMD_NODENAME"
@@ -46,44 +49,54 @@ NUM_THETAS=180
 N_SAMPLES=5000
 TYPE="ellipses"
 
-echo "finished test_radon.py at: $(date)"
+# -- Noise levels to evaluate -------------------------------------------------
+# Must match the data already generated and the models already trained. The
+# folder name is str(<noise>) from create_phantom_data.py, so use 0.0 (not 0.00).
+NOISE_LEVELS="0.0 0.01 0.02 0.05"
 
-# ── Data Generation (MatrixRadonAdapter, matrix_mode=1) ──────────────────────
+# -- Data Generation + Training (run once per noise level; normally pre-done) --
+# for NOISE in $NOISE_LEVELS; do
+#   python -u create_ellipse_data.py --img_size $IMG_SIZE --noise $NOISE \
+#     --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS \
+#     --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_BASE
+#   python -u train.py --type $TYPE --out_dir $MODEL_BASE/$NOISE \
+#     --data_dir $DATA_BASE/$NOISE --models resnet,nsn
+# done
+echo "Finished Data Generation / Training section at: $(date)"
 
-#python -u create_ellipse_data.py --img_size $IMG_SIZE --noise 0.01 --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR
-
-echo "Finished Data Generation at: $(date)"
-
-# ── Training (adapter chosen from summary.json matrix_mode) ──────────────────
-
-#python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR_NOISE --models resnet,nsn
-
-echo "Finished Training at: $(date)"
-
-# ── Adversarial Attacks ───────────────────────────────────────────────────────
-# NOTE: --data-root must point at the noise subfolder ($DATA_DIR_NOISE), matching
-# train.py's --data_dir. attack.py expects plain inner names (gt/, sino/, summary.json)
-# and checkpoints under $MODEL_DIR/init_<init>/checkpoints/.
-
-# Sweep attack budgets as a fraction of the signal norm ||y|| (attack.py scales eps by
-# ||y|| at every noise level), so the robustness curve is comparable across noise levels.
-# --tag includes the noise level so runs do not overwrite each other.
+# -- Adversarial Attacks (epsilon sweep, per matched noise level) -------------
+# For each noise level we attack the data generated at that level with the
+# models trained at that same level, so the evaluation is self-consistent.
+# eps is scaled per-sample by ||y_i|| inside attack.py, so the same eps fraction
+# is a comparable perturbation across noise levels. --tag encodes the noise level
+# so runs never overwrite each other (-> attack_runs_ellipses_n<noise>/).
+#
+# Canonical fair attack: --objective null at full budget; the range/null error
+# decomposition isolates the structural channel in the metric (see attack.py).
+# --objective-matrix additionally reports the mse vs null channel comparison;
+# --lipschitz reports the attack-free null-restricted Lipschitz of each model.
 EPS="0.005,0.01,0.02,0.05"
+INIT=pinv
 
-for INIT in pinv; do
-  python -u attack.py --type $TYPE --init pinv --eps $EPS --steps 200 --objective null_hybrid \
-    --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models nsn,resnet \
-    --init $INIT --attacks adam --norm l2 --tag extensive_Attack \
-    --objective-matrix mse,null,null_hybrid \
-    --shift-weight-sweep 0,0.25,1,4 \
+for NOISE in $NOISE_LEVELS; do
+  DATA_DIR_NOISE=$DATA_BASE/$NOISE
+  MODEL_DIR_NOISE=$MODEL_BASE/$NOISE
+
+  if [ ! -f "$DATA_DIR_NOISE/summary.json" ]; then
+    echo "[skip] no data for noise $NOISE at $DATA_DIR_NOISE (summary.json missing)"
+    continue
+  fi
+
+  echo "=== Attacking noise=$NOISE  data=$DATA_DIR_NOISE  models=$MODEL_DIR_NOISE  at $(date) ==="
+  python -u attack.py --type $TYPE --init $INIT --eps $EPS --steps 200 --objective null \
+    --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR_NOISE --models nsn,resnet \
+    --attacks adam --norm l2 --tag "ellipses_n${NOISE}" \
+    --objective-matrix mse,null \
     --lipschitz --lipschitz-samples 32 --lipschitz-iters 10
 done
-echo "Finished Adversarial Attack at: $(date)"
+echo "Finished Adversarial Attacks at: $(date)"
 
-#python -u test_radon.py --data-dir $DATA_DIR_NOISE --model-dir $MODEL_DIR --tag "ellipses"
-
-# ── Done ─────────────────────────────────────────────────────────────────────
-
+# -- Done ---------------------------------------------------------------------
 echo "Job finished at $(date)"
 
 
