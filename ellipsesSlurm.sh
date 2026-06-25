@@ -50,13 +50,13 @@ echo "finished test_radon.py at: $(date)"
 
 # ── Data Generation (MatrixRadonAdapter, matrix_mode=1) ──────────────────────
 
-python -u create_ellipse_data.py --img_size $IMG_SIZE --noise 0.01 --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR
+#python -u create_ellipse_data.py --img_size $IMG_SIZE --noise 0.01 --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR
 
 echo "Finished Data Generation at: $(date)"
 
 # ── Training (adapter chosen from summary.json matrix_mode) ──────────────────
 
-python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR_NOISE --models resnet,nsn
+#python -u train.py --type $TYPE --out_dir $MODEL_DIR --data_dir $DATA_DIR_NOISE --models resnet,nsn
 
 echo "Finished Training at: $(date)"
 
@@ -68,15 +68,15 @@ echo "Finished Training at: $(date)"
 # Sweep attack budgets as a fraction of the signal norm ||y|| (attack.py scales eps by
 # ||y|| at every noise level), so the robustness curve is comparable across noise levels.
 # --tag includes the noise level so runs do not overwrite each other.
-EPS="0.01"
+EPS="0.005,0.01,0.02,0.05"
 
 for INIT in pinv; do
-  python -u attack.py --type $TYPE --init pinv --eps $EPS --steps 40 \
+  python -u attack.py --type $TYPE --init pinv --eps $EPS --steps 200 --objective null_hybrid \
     --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR --models nsn,resnet \
     --init $INIT --attacks adam --norm l2 --tag extensive_Attack \
     --objective-matrix mse,null,null_hybrid \
     --shift-weight-sweep 0,0.25,1,4 \
-    --lipschitz --lipschitz-samples 8 --lipschitz-iters 10
+    --lipschitz --lipschitz-samples 32 --lipschitz-iters 10
 done
 echo "Finished Adversarial Attack at: $(date)"
 

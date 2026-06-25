@@ -4,12 +4,12 @@
   "models": "nsn,resnet",
   "attacks": "adam",
   "norm": "l2",
-  "eps": "0.01",
+  "eps": "0.005,0.01,0.02,0.05",
   "alpha": 0.5,
-  "steps": 40,
+  "steps": 200,
   "restarts": 3,
   "no_random_start": false,
-  "objective": "mse",
+  "objective": "null_hybrid",
   "shift_weight": 0.25,
   "attack_init_mode": "exact",
   "eval_init_mode": "exact",
@@ -29,7 +29,7 @@
   "objective_matrix": "mse,null,null_hybrid",
   "shift_weight_sweep": "0,0.25,1,4",
   "lipschitz": true,
-  "lipschitz_samples": 8,
+  "lipschitz_samples": 32,
   "lipschitz_iters": 10,
   "analysis_eps": null,
   "analysis_attack": null,
@@ -45,7 +45,10 @@
   "model_dir": "/scratch/noah/models_ellipses_matrices/0.01",
   "device": "cuda",
   "eps_list": [
-    0.01
+    0.005,
+    0.01,
+    0.02,
+    0.05
   ],
   "summary_path": "ellipses_out/summary.json"
 }
