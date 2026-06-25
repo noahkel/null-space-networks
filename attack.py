@@ -1117,7 +1117,7 @@ def run_attack(
     shift_weight=None,
 ) -> AttackResult:
     # objective / shift_weight default to the CLI values but can be overridden so
-    # the channel-matrix (P3) and shift-weight-sweep (P1) analyses can reuse the
+    # the channel-matrix and shift-weight-sweep analyses can reuse the
     # exact same attack machinery with a different target.
     objective = args.objective if objective is None else objective
     shift_weight = args.shift_weight if shift_weight is None else shift_weight
@@ -1273,7 +1273,7 @@ def save_null_growth_headline(
     eps: float,
     attack_name: str,
 ) -> None:
-    """P2 headline: for each model, the null-space error magnitude ||e_nul|| clean vs
+    """headline: for each model, the null-space error magnitude ||e_nul|| clean vs
     adversarial, with the adversarial range floor ||e_ran|| shown alongside. The
     growth of the null channel is the fair robustness signal; the range floor is the
     shared inversion error every data-consistent method carries."""
@@ -1314,7 +1314,7 @@ def save_consistency_plot(
     rows_by_model: Dict[str, List[Dict]],
     eps: float,
 ) -> None:
-    """P4: measurement (data) consistency ||proj_ran(A x_hat) - y||/||y||, clean vs adv,
+    """measurement (data) consistency ||proj_ran(A x_hat) - y||/||y||, clean vs adv,
     per model. Low/flat under attack => the adversarial error hides in the null /
     small-singular-value subspace (the literature finding), which is exactly why a
     null-targeted attack/metric is the fair lens."""
@@ -1342,37 +1342,85 @@ def save_consistency_plot(
     plt.close(fig)
 
 
+# (matrix_res metric label, function: channel sub -> per-sample row key in evaluate_batch)
+# L2 is the absolute Euclidean norm of the error component; the rest are image
+# metrics scored on (x_gt + e_component) vs x_gt, so they read the same channel
+# through a different lens. Used by run_extra_analyses (collection) and
+# save_attack_channel_matrix (plotting) so the two stay in sync.
+_CHANNEL_METRIC_SOURCES = [
+    ("l2",      lambda sub: "adv_e_%s_l2" % sub),
+    ("rel_l2",  lambda sub: "adv_rel_l2_%s" % sub),
+    ("psnr",    lambda sub: "adv_psnr_%s" % sub),
+    ("ssim",    lambda sub: "adv_ssim_%s" % sub),
+    ("mae",     lambda sub: "adv_mae_%s" % sub),
+    ("nrmse",   lambda sub: "adv_nrmse_%s" % sub),
+    ("max_err", lambda sub: "adv_max_err_%s" % sub),
+]
+
+
 def save_attack_channel_matrix(
     out_dir: Path,
     matrix_res: Dict[str, Dict[str, Dict[str, float]]],
     eps: float,
 ) -> None:
-    """P3: heatmaps of adversarial ||e_nul|| (structural) and ||e_ran|| (floor) for the
-    model x attack-objective grid. Reading a row shows how a model responds to its
-    own adaptive (null-targeted) attack vs the trivial mse attack; reading a column
-    compares models under the same objective."""
+    """merged range/null channel matrix, one heatmap per image metric.
+
+    Rows are (model, channel) pairs -- e.g. nsn null, nsn range, resnet null,
+    resnet range -- and columns are the attack objectives. One figure is written
+    per metric: L2 (absolute Euclidean norm of the error component), rel-L2, PSNR,
+    SSIM, MAE, NRMSE and max-abs-err. The metric and whether higher means more or
+    less damage are written in the title (PSNR/SSIM: lower = more damage; the rest:
+    higher = more damage). Cells are the median over the evaluated samples at the
+    analysis budget eps; the true value is printed in every cell because the four
+    rows can span very different scales, so colour alone is not comparable across
+    rows. A white separator divides the models.
+
+    matrix_res[model][objective] must contain '<metric>_nul' / '<metric>_ran'
+    keys for each metric label (filled in run_extra_analyses via
+    _CHANNEL_METRIC_SOURCES).
+    """
     models = list(matrix_res)
     if not models:
         return
     objs = list(matrix_res[models[0]])
-    for chan, label in (("nul", "||e_nul||  (structural / learned channel)"),
-                        ("ran", "||e_ran||  (range floor)")):
-        M = np.array([[matrix_res[m][o][chan] for o in objs] for m in models], dtype=float)
-        fig, ax = plt.subplots(figsize=(1.7 * len(objs) + 2.5, 1.0 * len(models) + 2.5))
+    row_specs = [(m, sub) for m in models for sub in ("nul", "ran")]
+    sub_name = {"nul": "null", "ran": "range"}
+    metrics = [
+        ("l2",      "L2 (abs)",     "higher = more damage"),
+        ("rel_l2",  "rel-L2",       "higher = more damage"),
+        ("psnr",    "PSNR (dB)",    "lower = more damage"),
+        ("ssim",    "SSIM",         "lower = more damage"),
+        ("mae",     "MAE",          "higher = more damage"),
+        ("nrmse",   "NRMSE",        "higher = more damage"),
+        ("max_err", "max-abs-err",  "higher = more damage"),
+    ]
+    for label, nice, direction in metrics:
+        try:
+            M = np.array([[matrix_res[m][o]["%s_%s" % (label, sub)] for o in objs]
+                          for (m, sub) in row_specs], dtype=float)
+        except KeyError:
+            continue
+        if np.all(np.isnan(M)):
+            continue
+        fig, ax = plt.subplots(figsize=(1.9 * len(objs) + 3.0,
+                                        0.8 * len(row_specs) + 2.5))
         im = ax.imshow(M, cmap="magma", aspect="auto")
         ax.set_xticks(range(len(objs)))
         ax.set_xticklabels(objs, rotation=30, ha="right")
-        ax.set_yticks(range(len(models)))
-        ax.set_yticklabels(models)
-        for r in range(len(models)):
+        ax.set_yticks(range(len(row_specs)))
+        ax.set_yticklabels(["%s %s" % (m, sub_name[sub]) for (m, sub) in row_specs])
+        for k in range(2, len(row_specs), 2):  # separate the models
+            ax.axhline(k - 0.5, color="white", lw=1.5)
+        for r in range(len(row_specs)):
             for c in range(len(objs)):
                 ax.text(c, r, "%.3g" % M[r, c], ha="center", va="center",
                         color="white", fontsize=8)
-        ax.set_title("Adversarial %s\nattack objective x model (median, eps=%g)"
-                     % (label, eps), fontsize=9)
+        ax.set_title("Adversarial channel error -- metric: %s (%s)\n"
+                     "rows = model x {null, range}, cols = attack objective "
+                     "(median, eps=%g)" % (nice, direction, eps), fontsize=9)
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         plt.tight_layout()
-        plt.savefig(out_dir / ("channel_matrix_%s.png" % chan), dpi=150)
+        plt.savefig(out_dir / ("channel_matrix_%s.png" % label), dpi=150)
         plt.close(fig)
 
 
@@ -1382,7 +1430,7 @@ def save_shift_weight_sweep(
     objective: str,
     eps: float,
 ) -> None:
-    """P1: null (solid) and range (dashed) error-channel magnitude vs the hybrid
+    """null (solid) and range (dashed) error-channel magnitude vs the hybrid
     shift-weight, one colour per model. Locates the weight that maximises structural
     (null) damage while suppressing the trivial range channel."""
     models = [m for m in sweep_res if sweep_res[m]]
@@ -1405,7 +1453,7 @@ def save_shift_weight_sweep(
         return
     ax.set_xlabel("shift-weight  (range-error penalty in the hybrid objective)")
     ax.set_ylabel("||error component||  (median)")
-    ax.set_title("P1 - shift-weight sweep (%s, eps=%g)\n"
+    ax.set_title("shift-weight sweep (%s, eps=%g)\n"
                  "solid = null (structural), dashed = range (floor)" % (objective, eps), fontsize=9)
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=7, ncol=max(1, len(models)))
@@ -1422,7 +1470,7 @@ def estimate_lipschitz_nullspace(
     n_samples: int = 4,
     n_iter: int = 8,
 ) -> Dict[str, float]:
-    """P6 - operator-norm (local Lipschitz) estimate of the *learned correction*
+    """operator-norm (local Lipschitz) estimate of the *learned correction*
     restricted to the null space of A_la.
 
     We linearise the correction  g(x) = f(x) - x  (= P_null(UNet(x)) for the NSN,
@@ -1538,9 +1586,8 @@ def run_extra_analyses(
     init_method: str,
     noise: str,
 ) -> None:
-    """Drive the opt-in P1/P3/P6 analyses. Loops each model once, builds one clean
-    cache, and runs whichever analyses are enabled. P2/P4 plots are produced from the
-    primary run's per-eps rows in main() and do not need this driver."""
+    """Drive the opt-in analyses. Loops each model once, builds one clean
+    cache, and runs whichever analyses are enabled."""
     matrix_objs = parse_list_arg(args.objective_matrix) if args.objective_matrix else []
     sweep_weights = parse_float_list(args.shift_weight_sweep) if args.shift_weight_sweep else []
     do_lip = bool(args.lipschitz)
@@ -1575,10 +1622,13 @@ def run_extra_analyses(
             for obj in matrix_objs:
                 rows = attack_over_cache(adapter, cache, radon, args, attack_name,
                                          eps_nominal, obj, args.shift_weight, max_samples)
-                d[obj] = {"ran": _median_of(rows, "adv_e_ran_l2"),
-                          "nul": _median_of(rows, "adv_e_nul_l2")}
-                print("[analysis][matrix] %s obj=%s nul=%.4g ran=%.4g"
-                      % (model_name, obj, d[obj]["nul"], d[obj]["ran"]))
+                md: Dict[str, float] = {}
+                for label, keyfn in _CHANNEL_METRIC_SOURCES:
+                    for sub in ("nul", "ran"):
+                        md["%s_%s" % (label, sub)] = _median_of(rows, keyfn(sub))
+                d[obj] = md
+                print("[analysis][matrix] %s obj=%s l2_nul=%.4g l2_ran=%.4g"
+                      % (model_name, obj, md["l2_nul"], md["l2_ran"]))
             matrix_res[model_name] = d
 
         if sweep_weights:
@@ -1662,29 +1712,28 @@ def main() -> None:
     parser.add_argument("--spsa-samples", type=int, default=16)
     parser.add_argument("--spsa-sigma", type=float, default=1e-2)
     parser.add_argument("--stealth-weight", type=float, default=0.0)
-    # --- opt-in extra analyses (P1 sweep, P3 channel matrix, P6 Lipschitz) ---
     parser.add_argument(
         "--objective-matrix", default="",
-        help="P3: comma-separated objectives to sweep for the model x objective channel "
+        help="comma-separated objectives to sweep for the model x objective channel "
              "matrix, e.g. 'mse,null,null_hybrid'. Empty disables the matrix.",
     )
     parser.add_argument(
         "--shift-weight-sweep", default="",
-        help="P1: comma-separated shift-weight values to sweep for the hybrid/null_hybrid "
+        help="comma-separated shift-weight values to sweep for the hybrid/null_hybrid "
              "objective, e.g. '0,0.25,1,4'. Empty disables the sweep.",
     )
     parser.add_argument("--lipschitz", action="store_true",
-                        help="P6: estimate the null-restricted local Lipschitz constant of each model.")
+                        help="estimate the null-restricted local Lipschitz constant of each model.")
     parser.add_argument("--lipschitz-samples", type=int, default=4,
-                        help="P6: number of examples to average the Lipschitz estimate over.")
+                        help="number of examples to average the Lipschitz estimate over.")
     parser.add_argument("--lipschitz-iters", type=int, default=8,
-                        help="P6: power-iteration steps for the Lipschitz estimate.")
+                        help="power-iteration steps for the Lipschitz estimate.")
     parser.add_argument("--analysis-eps", type=float, default=None,
-                        help="Single attack budget used by the P1/P3 analyses (default: max of --eps).")
+                        help="Single attack budget used by the analyses (default: max of --eps).")
     parser.add_argument("--analysis-attack", default=None,
-                        help="Attack used by the P1/P3 analyses (default: first of --attacks).")
+                        help="Attack used by the analyses (default: first of --attacks).")
     parser.add_argument("--analysis-max-samples", type=int, default=None,
-                        help="Sample budget for the P1/P3 analyses (default: --max-samples).")
+                        help="Sample budget for the analyses (default: --max-samples).")
     parser.add_argument("--adam-lr", type=float, default=0.01)
     parser.add_argument("--adam-patience", type=int, default=50)
     parser.add_argument("--adam-tv-weight", type=float, default=0.0)
@@ -1951,12 +2000,9 @@ def main() -> None:
                 fname="decomp_init_nul_frac.png",
                 title="Init null-space fraction of error (before NSN): clean vs adversarial (median)",
             )
-            # P2 headline (null-channel growth + shared range floor) and
-            # P4 measurement-consistency, both straight from the primary run's rows.
             save_null_growth_headline(decomp_dir, rows_by_model, eps_nominal, att_name)
             save_consistency_plot(decomp_dir, rows_by_model, eps_nominal)
 
-        # P1 / P3 / P6 - opt-in analyses that need extra attack runs or model access.
         run_extra_analyses(
             args=args,
             radon=radon,
