@@ -208,15 +208,15 @@ def main(shape: str) -> None:
 
         x_gt = torch.from_numpy(next(gen).data).to(DEVICE)
 
-        y = radon_full.forward_la(to_4d(x_gt))
-        noise = radon_full.proj_ran(torch.randn_like(y))
+        y = radon.forward_la(to_4d(x_gt))
+        noise = radon.proj_ran(torch.randn_like(y))
         add_noise = NOISE_sigma_REL * (torch.linalg.norm(y) / torch.linalg.norm(noise)) * noise
         y_delta = y + add_noise
 
         y_norms.append(float(torch.linalg.norm(y.reshape(-1))))
         y_diff_norms.append(float(torch.linalg.norm((add_noise).reshape(-1))))
 
-        x_fbp = radon_full.fbp_la(y_delta).squeeze()
+        x_fbp = radon.fbp_la(y_delta).squeeze()
 
         x_pinv = radon.backward_la(y_delta).squeeze()
 
