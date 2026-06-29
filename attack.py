@@ -233,6 +233,19 @@ class ModelAttackAdapter:
         x_init, y_adv = self.build_inputs(y_adv, mode=mode, project=project)
         pred = self.model(x_init, y_adv)
         return pred, x_init, y_adv
+    def prepare_clean(self, y_clean: torch.Tensor, mode: Optional[str] = None) -> None:
+        """Cache the clean init reconstruction used as the reference point for the
+        null-space noise projection. Must be called once per batch (with the init
+        mode that will be used) before attacking / evaluating. A no-op unless
+        noise_subspace == 'null'."""
+        mode = mode or self.attack_init_mode
+        with torch.no_grad():
+            y_c = self.projector(y_clean)
+            if mode == "surrogate":
+                ref = self.init_reconstructor.surrogate(y_c)
+            else:
+                ref = self.init_reconstructor.exact(y_c)
+        self._clean_init_ref = ref.detach()
 
 
 def attack_objective(

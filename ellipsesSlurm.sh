@@ -55,13 +55,13 @@ TYPE="ellipses"
 NOISE_LEVELS="0.0 0.01 0.02 0.05"
 
 # -- Data Generation + Training (run once per noise level; normally pre-done) --
-# for NOISE in $NOISE_LEVELS; do
+#for NOISE in $NOISE_LEVELS; do
 #   python -u create_ellipse_data.py --img_size $IMG_SIZE --noise $NOISE \
 #     --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS \
 #     --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_BASE
 #   python -u train.py --type $TYPE --out_dir $MODEL_BASE/$NOISE \
 #     --data_dir $DATA_BASE/$NOISE --models resnet,nsn
-# done
+#done
 echo "Finished Data Generation / Training section at: $(date)"
 
 # -- Adversarial Attacks (epsilon sweep, per matched noise level) -------------
@@ -88,9 +88,9 @@ for NOISE in $NOISE_LEVELS; do
   fi
 
   echo "=== Attacking noise=$NOISE  data=$DATA_DIR_NOISE  models=$MODEL_DIR_NOISE  at $(date) ==="
-  python -u attack.py --type $TYPE --init $INIT --eps $EPS --steps 200 --objective null \
+  python -u attack.py --type $TYPE --init $INIT --eps $NOISE --steps 200 --objective null \
     --data-root $DATA_DIR_NOISE --model-dir $MODEL_DIR_NOISE --models nsn,resnet \
-    --attacks adam --norm l2 --tag "ellipses_n${NOISE}" \
+    --attacks adam --norm l2 --tag "ellipses_fast_n${NOISE}" \
     --objective-matrix mse,null \
     --lipschitz --lipschitz-samples 32 --lipschitz-iters 10
 done
