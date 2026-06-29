@@ -33,23 +33,17 @@ from src.utils import (
     visualise_decomposition,
 )
 
-
-
 def parse_list_arg(value: str) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
-
 
 def parse_float_list(value: str) -> List[float]:
     return [float(item.strip()) for item in str(value).split(",") if item.strip()]
 
-
 def l2_norm_batch(x: torch.Tensor) -> torch.Tensor:
     return torch.linalg.norm(x.reshape(x.shape[0], -1), dim=1)
 
-
 def linf_norm_batch(x: torch.Tensor) -> torch.Tensor:
     return x.reshape(x.shape[0], -1).abs().max(dim=1).values
-
 
 def proj_l2_ball(delta: torch.Tensor, eps) -> torch.Tensor:
     # eps may be a scalar (one global budget) or a per-sample 1-D tensor of shape [B]
@@ -64,7 +58,6 @@ def proj_l2_ball(delta: torch.Tensor, eps) -> torch.Tensor:
     scale = torch.minimum(torch.ones_like(norms), eps_vec / norms)
     return delta * scale.view(-1, 1, 1, 1)
 
-
 def proj_linf_ball(delta: torch.Tensor, eps) -> torch.Tensor:
     if torch.is_tensor(eps):
         eps_t = eps.to(device=delta.device, dtype=delta.dtype).reshape(-1, 1, 1, 1).clamp_min(0.0)
@@ -73,7 +66,6 @@ def proj_linf_ball(delta: torch.Tensor, eps) -> torch.Tensor:
         return torch.zeros_like(delta)
     return delta.clamp(-eps, eps)
 
-
 def project_delta(delta: torch.Tensor, eps: float, norm: str, projector: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
     delta = projector(delta)
     if norm == "l2":
@@ -81,7 +73,6 @@ def project_delta(delta: torch.Tensor, eps: float, norm: str, projector: Callabl
     if norm == "linf":
         return projector(proj_linf_ball(delta, eps))
     raise ValueError(f"Unsupported norm '{norm}'")
-
 
 def random_start_like(y: torch.Tensor, eps: float, norm: str, projector: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
     if not torch.is_tensor(eps) and eps <= 0:
@@ -99,27 +90,22 @@ def random_start_like(y: torch.Tensor, eps: float, norm: str, projector: Callabl
         raise ValueError(f"Unsupported norm '{norm}'")
     return projector(delta)
 
-
 def total_variation(x: torch.Tensor) -> torch.Tensor:
     """Mean isotropic total variation over a batch [B, C, H, W]."""
     dx = x[:, :, :, 1:] - x[:, :, :, :-1]
     dy = x[:, :, 1:, :] - x[:, :, :-1, :]
     return (dx.abs().mean() + dy.abs().mean())
 
-
 def reduce_loss(loss_map: torch.Tensor) -> torch.Tensor:
     if loss_map.ndim <= 1:
         return loss_map.mean()
     return loss_map.reshape(loss_map.shape[0], -1).mean(dim=1).mean()
 
-
 def per_example_mse(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return ((x - y) ** 2).reshape(x.shape[0], -1).mean(dim=1)
 
-
 def batch_mean_abs(x: torch.Tensor) -> torch.Tensor:
     return x.abs().reshape(x.shape[0], -1).mean(dim=1)
-
 
 def confidence_interval_95(values: Iterable[float]) -> Tuple[float, float]:
     arr = np.asarray(list(values), dtype=np.float64)
@@ -131,13 +117,15 @@ def confidence_interval_95(values: Iterable[float]) -> Tuple[float, float]:
     half_width = float(1.96 * arr.std(ddof=1) / math.sqrt(arr.size))
     return mean, half_width
 
+def _median_of(rows: List[Dict[str, float]], key: str) -> float:
+    vals = [r[key] for r in rows if key in r]
+    return float(np.median(vals)) if vals else float("nan")
 
 @dataclass
 class AttackResult:
     y_adv: torch.Tensor
     delta: torch.Tensor
     runtime_sec: float
-
 
 class InitReconstructor:
     def __init__(self, example: str, init_method: str, summary: Dict, radon):
@@ -199,7 +187,6 @@ class InitReconstructor:
 
         raise ValueError(f"Unsupported init method '{self.init_method}'")
 
-
 class ModelAttackAdapter:
     def __init__(
         self,
@@ -246,7 +233,6 @@ class ModelAttackAdapter:
             else:
                 ref = self.init_reconstructor.exact(y_c)
         self._clean_init_ref = ref.detach()
-
 
 def attack_objective(
     pred: torch.Tensor,
@@ -304,7 +290,6 @@ def attack_objective(
 
     raise ValueError(f"Unknown objective '{objective}'")
 
-
 def fgsm_attack(
     adapter: ModelAttackAdapter,
     x_gt: torch.Tensor,
@@ -338,7 +323,6 @@ def fgsm_attack(
         y_adv = adapter.projector(y_proj + delta)
         delta = y_adv - y_clean
     return AttackResult(y_adv=y_adv.detach(), delta=delta.detach(), runtime_sec=time.perf_counter() - start)
-
 
 def pgd_attack(
     adapter: ModelAttackAdapter,
@@ -394,7 +378,6 @@ def pgd_attack(
                 best_delta = (best_y_adv - y_clean).detach().clone()
 
     return AttackResult(y_adv=best_y_adv, delta=best_delta, runtime_sec=time.perf_counter() - start)
-
 
 def spsa_attack(
     adapter: ModelAttackAdapter,
@@ -454,7 +437,6 @@ def spsa_attack(
 
     return AttackResult(y_adv=y_adv.detach(), delta=delta.detach(), runtime_sec=time.perf_counter() - start)
 
-
 def adam_attack(
     adapter: ModelAttackAdapter,
     x_gt: torch.Tensor,
@@ -512,7 +494,6 @@ def adam_attack(
 
     return AttackResult(y_adv=y_adv.detach(), delta=delta_final, runtime_sec=time.perf_counter() - start)
 
-
 def get_loader(example: str, init_method: str, batch_size: int, split: str, n_train: int, n_test: int, num_workers: int, data_root: Optional[str] = None, noise: str = ""):
     root = data_root or f"{example}_out"
     if example == "ellipses":
@@ -528,26 +509,25 @@ def get_loader(example: str, init_method: str, batch_size: int, split: str, n_tr
             device=None,
             noise=noise,
         )
-    #return get_lodopab_dataloader(
-    #    init_recon=init_method,
-    #    batch_size=batch_size,
-    #    split=split,
-    #    n_train=n_train,
-    #    n_test=n_test,
-    #    data_root=root,
-    #    shuffle=False,
-    #    num_workers=num_workers,
-    #    device=None,
-    #)
+    
     raise NotImplementedError("Lodopab not implemented")
-
+    return get_lodopab_dataloader(
+        init_recon=init_method,
+        batch_size=batch_size,
+        split=split,
+        n_train=n_train,
+        n_test=n_test,
+        data_root=root,
+        shuffle=False,
+        num_workers=num_workers,
+        device=None,
+    )
 
 def load_summary(example: str, noise: str, data_root: Optional[str] = None) -> Dict:
     root = data_root or f"{example}_out"
     summary_path = Path(root) / f"summary{noise}.json"
     with open(summary_path, "r", encoding="utf-8") as f:
         return json.load(f)
-
 
 def build_radon(summary: Dict, device: torch.device):
     angles = np.asarray(summary["angles"], dtype=np.float64)
@@ -611,10 +591,8 @@ def load_model_checkpoint(
     model.eval()
     return model
 
-
 def to_numpy_img(x: torch.Tensor) -> np.ndarray:
     return x.detach().cpu().squeeze().numpy()
-
 
 def evaluate_batch(
     x_gt: torch.Tensor,
@@ -786,7 +764,6 @@ def evaluate_batch(
 
     return rows
 
-
 def save_examples(
     out_dir: Path,
     example_rows: List[Dict],
@@ -912,7 +889,6 @@ def save_scatter_plot(
     plt.savefig(out_dir / "scatter_perturbation_vs_adv.png", dpi=150)
     plt.close(fig)
 
-
 def save_robustness_curve(
     out_dir: Path,
     curve_by_model: Dict[str, List[Dict]],
@@ -1004,6 +980,7 @@ def save_error_components_curve(
     plt.tight_layout()
     plt.savefig(out_dir / fname, dpi=150)
     plt.close(fig)
+
 def save_decomposition_bar(
     out_dir: Path,
     rows_by_model: Dict[str, List[Dict]],
@@ -1045,6 +1022,7 @@ def save_decomposition_bar(
     plt.tight_layout()
     plt.savefig(out_dir / fname, dpi=150)
     plt.close(fig)
+
 def summarize_metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
     metrics: Dict[str, float] = {"num_examples": len(rows)}
     if not rows:
@@ -1116,7 +1094,6 @@ def summarize_metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
         metrics[f"{key}_q75"] = float(np.percentile(values, 75))
 
     return metrics
-
 
 def run_attack(
     attack_name: str,
@@ -1201,13 +1178,6 @@ def run_attack(
 
     raise ValueError(f"Unknown attack '{attack_name}'")
 
-
-
-def _median_of(rows: List[Dict[str, float]], key: str) -> float:
-    vals = [r[key] for r in rows if key in r]
-    return float(np.median(vals)) if vals else float("nan")
-
-
 def build_clean_cache(adapter: ModelAttackAdapter, loader, max_samples: int, device) -> List[Tuple]:
     """Cache (x_gt, x_init, y_clean, clean_pred) for the first max_samples examples.
     Mirrors the clean-caching block in main() so the analyses below operate on the
@@ -1226,7 +1196,6 @@ def build_clean_cache(adapter: ModelAttackAdapter, loader, max_samples: int, dev
             if n >= max_samples:
                 break
     return cache
-
 
 def attack_over_cache(
     adapter: ModelAttackAdapter,
@@ -1279,7 +1248,6 @@ def attack_over_cache(
         processed += x_gt.shape[0]
     return rows
 
-
 def save_null_growth_headline(
     out_dir: Path,
     rows_by_model: Dict[str, List[Dict]],
@@ -1321,7 +1289,6 @@ def save_null_growth_headline(
     plt.savefig(out_dir / "headline_null_growth.png", dpi=150)
     plt.close(fig)
 
-
 def save_consistency_plot(
     out_dir: Path,
     rows_by_model: Dict[str, List[Dict]],
@@ -1354,7 +1321,6 @@ def save_consistency_plot(
     plt.savefig(out_dir / "measurement_consistency.png", dpi=150)
     plt.close(fig)
 
-
 # (matrix_res metric label, function: channel sub -> per-sample row key in evaluate_batch)
 # L2 is the absolute Euclidean norm of the error component; the rest are image
 # metrics scored on (x_gt + e_component) vs x_gt, so they read the same channel
@@ -1369,7 +1335,6 @@ _CHANNEL_METRIC_SOURCES = [
     ("nrmse",   lambda sub: "adv_nrmse_%s" % sub),
     ("max_err", lambda sub: "adv_max_err_%s" % sub),
 ]
-
 
 def save_attack_channel_matrix(
     out_dir: Path,
@@ -1436,7 +1401,6 @@ def save_attack_channel_matrix(
         plt.savefig(out_dir / ("channel_matrix_%s.png" % label), dpi=150)
         plt.close(fig)
 
-
 def save_shift_weight_sweep(
     out_dir: Path,
     sweep_res: Dict[str, List[Dict[str, float]]],
@@ -1473,7 +1437,6 @@ def save_shift_weight_sweep(
     plt.tight_layout()
     plt.savefig(out_dir / "shift_weight_sweep.png", dpi=150)
     plt.close(fig)
-
 
 def estimate_lipschitz_nullspace(
     model: nn.Module,
@@ -1559,7 +1522,6 @@ def estimate_lipschitz_nullspace(
         "n": len(samples),
     }
 
-
 def save_lipschitz_plot(out_dir: Path, lip_res: Dict[str, Dict[str, float]]) -> None:
     """P6 bar chart: null-restricted local Lipschitz constant per model (mean +/- std,
     max marked). Higher => the learned channel amplifies null-space perturbations more,
@@ -1584,7 +1546,6 @@ def save_lipschitz_plot(out_dir: Path, lip_res: Dict[str, Dict[str, float]]) -> 
     plt.tight_layout()
     plt.savefig(out_dir / "lipschitz_nullspace.png", dpi=150)
     plt.close(fig)
-
 
 def run_extra_analyses(
     args,
@@ -1675,9 +1636,7 @@ def run_extra_analyses(
         json.dump({"eps": eps_nominal, "attack": attack_name,
                    "matrix": matrix_res, "shift_weight_sweep": sweep_res,
                    "lipschitz_nullspace": lip_res}, f, indent=2)
-
-
-def main() -> None:
+def parse():
     parser = argparse.ArgumentParser(description="Adversarial attacks for Radon reconstruction models.")
     parser.add_argument("--type", required=True, choices=["ellipses", "lodopab"])
     parser.add_argument("--init", default="fbp", choices=["fbp", "pinv", "tv", "lw"], help="Initialization method")
@@ -1759,8 +1718,10 @@ def main() -> None:
                              "their results do not overwrite each other.")
     parser.add_argument("--data-root", default=None, help="Path to {example}_out data directory (default: ./{type}_out)")
     parser.add_argument("--model-dir", default=None, help="Base dir containing runs_{type}/ checkpoints (default: .)")
-    args = parser.parse_args()
-
+    return parser.parse_args()
+def main() -> None:
+    
+    args = parse()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     set_seed(args.seed)
 
