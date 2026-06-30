@@ -31,6 +31,7 @@ from src.utils import (
     ssim,
     to_4d,
     visualise_decomposition,
+    decompose_metrics
 )
 
 def parse_list_arg(value: str) -> List[str]:
@@ -220,19 +221,6 @@ class ModelAttackAdapter:
         x_init, y_adv = self.build_inputs(y_adv, mode=mode, project=project)
         pred = self.model(x_init, y_adv)
         return pred, x_init, y_adv
-    def prepare_clean(self, y_clean: torch.Tensor, mode: Optional[str] = None) -> None:
-        """Cache the clean init reconstruction used as the reference point for the
-        null-space noise projection. Must be called once per batch (with the init
-        mode that will be used) before attacking / evaluating. A no-op unless
-        noise_subspace == 'null'."""
-        mode = mode or self.attack_init_mode
-        with torch.no_grad():
-            y_c = self.projector(y_clean)
-            if mode == "surrogate":
-                ref = self.init_reconstructor.surrogate(y_c)
-            else:
-                ref = self.init_reconstructor.exact(y_c)
-        self._clean_init_ref = ref.detach()
 
 def attack_objective(
     pred: torch.Tensor,
@@ -240,40 +228,59 @@ def attack_objective(
     clean_pred: torch.Tensor,
     objective: str,
     shift_weight: float,
+    target: torch.Tensor = None,
     radon=None,
 ) -> torch.Tensor:
-    """Attack loss to be *maximised*.
+    """
+    Attack loss to be *maximised*.
 
-    The plain "mse"/"shift"/"hybrid" objectives reward total reconstruction
-    error. On a data-consistent model (NSN/DPNSN) the cheapest way to grow that
-    error is to inject error into the *range* (measured) component, which the
-    network reproduces by design — so the attack looks strong but is structurally
-    trivial and not comparable to what the same attack does to ResNet.
+    Notation:  e = pred - x_gt          (error vs ground truth)
+             s = pred - clean_pred    (shift vs the clean / unattacked prediction)
+             P_null  = projection onto the null space of the forward operator
+             P_range = I - P_null     (data-consistent / range component)
+             λ       = shift_weight
 
-    The "null" objectives instead reward only the *null-space* component of the
-    error, ‖P_null (pred - target)‖². P_null is the image-domain projector onto
-    null(A_la) (radon.proj_null_image, differentiable). This forces the optimiser
-    to corrupt exactly the component the network is responsible for — the part
-    that can hallucinate/break structure the way a ResNet attack does — rather
-    than taking the free range-space channel.
+    Objectives:
 
-      null        : ‖P_null (pred - x_gt)‖²            (null-space error vs GT)
-      null_shift  : ‖P_null (pred - clean_pred)‖²      (null-space deviation from
-                                                        the clean reconstruction)
-      null_hybrid : null + shift_weight * (range-error penalty), i.e. reward
-                    null-space damage while *penalising* range-space error so the
-                    budget is spent on structural rather than trivial corruption.
+      mse          : ‖e‖²                        (total error vs GT)
+      targeted     : -‖pred - target‖²           (distance to a chosen target image)
+      shift        : ‖s‖²                        (deviation from the clean prediction)
+      hybrid       : ‖e‖² + λ‖s‖²                (GT error + weighted shift)
+
+      null         : ‖P_null e‖²                 (null-space error vs GT)
+      null_shift   : ‖P_null s‖²                 (null-space shift vs clean pred)
+      null_hybrid  : ‖P_null e‖² - λ‖P_range e‖² (null error, penalising the range
+                                                  component so budget isn't wasted on
+                                                  the data-consistent channel the NSN
+                                                  cannot correct by design)
+
+      range        : ‖P_range e‖²                (range / data-consistent error vs GT)
+      range_shift  : ‖P_range s‖²                (range shift vs clean pred)
+      range_hybrid : ‖P_range e‖² - λ‖P_null e‖²  (range error, penalising the null
+                                                  component, mirror of null_hybrid)
     """
     gt_term = reduce_loss((pred - x_gt) ** 2)
     shift_term = reduce_loss((pred - clean_pred.detach()) ** 2)
-
+    target_term = reduce_loss((pred - target.detach()) **2)
+    if objective == "targeted":
+        return -target_term
     if objective == "mse":
         return gt_term
     if objective == "shift":
         return shift_term
     if objective == "hybrid":
         return gt_term + shift_weight * shift_term
-
+    if objective in ("range", "range_shift", "range_hybrid"):
+        if radon is None:
+            raise ValueError(f"Objective '{objective}' requires a radon operator.")
+        err = (pred - x_gt) if objective != "range_shift" else (pred - clean_pred.detach())
+        err_range = err - radon.proj_null_image(err)
+        range_term = reduce_loss(err_range**2)
+        if objective != "range_hybrid":
+            return range_term
+        err_null = err - err_range
+        null_term = reduce_loss(err_null **2)
+        return range_term - shift_weight * null_term
     if objective in ("null", "null_shift", "null_hybrid"):
         if radon is None:
             raise ValueError(f"Objective '{objective}' requires a radon operator.")
@@ -452,80 +459,61 @@ def adam_attack(
     lr: float = 0.01,
     scheduler_patience: int = 50,
     stealth_weight: float = 0.0,
+    restarts: int = 4,
+    random_start: bool = True,
 ) -> AttackResult:
     start = time.perf_counter()
+    best_y_adv = y_clean.detach().clone()
+    best_delta = torch.zeros_like(y_clean)
+    best_score = -float("inf")
+    for _ in range(restarts):
+        delta = random_start_like(y_clean, eps, norm, adapter.projector) if random_start else torch.zeros_like(y_clean)
+        delta = project_delta(delta, eps, norm, adapter.projector)
+        opt = torch.optim.Adam([delta], lr=lr)
+        sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, patience=scheduler_patience)
 
-    delta = nn.Parameter(torch.zeros_like(y_clean))
-    opt = torch.optim.Adam([delta], lr=lr)
-    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, patience=scheduler_patience)
-
-    # Pre-compute clean surrogate init once for consistency term
-    with torch.no_grad():
-        clean_init = adapter.init_reconstructor.surrogate(adapter.projector(y_clean))
-
-    for _ in range(steps):
-        opt.zero_grad()
-
-        y_adv = adapter.projector(y_clean + delta)
-        pred, x_init, _ = adapter.forward(y_adv, project=False)
-
-        # Negate because Adam minimizes, but we want to maximize reconstruction error
-        loss = -attack_objective(pred, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon)
-
-        if tv_weight > 0.0:
-            loss = loss + tv_weight * total_variation(pred)
-
-        if consistency_weight > 0.0:
-            loss = loss + consistency_weight * reduce_loss((x_init - clean_init) ** 2)
-
-        if stealth_weight > 0.0:
-            loss = loss + stealth_weight * reduce_loss(delta.abs())
-
-        loss.backward()
-        opt.step()
-        sched.step(loss.item())
-
+        # Pre-compute clean init once for consistency term
         with torch.no_grad():
-            delta.data = project_delta(delta.data, eps, norm, adapter.projector)
+            clean_init = adapter.init_reconstructor.exact(adapter.projector(y_clean))
 
-    with torch.no_grad():
-        y_adv = adapter.projector(y_clean + delta)
-        delta_final = (y_adv - y_clean).detach()
+        for _ in range(steps):
+            opt.zero_grad()
 
-    return AttackResult(y_adv=y_adv.detach(), delta=delta_final, runtime_sec=time.perf_counter() - start)
+            y_adv = adapter.projector(y_clean + delta)
+            pred, x_init, _ = adapter.forward(y_adv, project=False)
 
-def get_loader(example: str, init_method: str, batch_size: int, split: str, n_train: int, n_test: int, num_workers: int, data_root: Optional[str] = None, noise: str = ""):
+            # Negate because Adam minimizes, but we want to maximize reconstruction error
+            loss = -attack_objective(pred, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon)
+
+            if tv_weight > 0.0:
+                loss = loss + tv_weight * total_variation(pred)
+
+            if consistency_weight > 0.0:
+                loss = loss + consistency_weight * reduce_loss((x_init - clean_init) ** 2)
+
+            if stealth_weight > 0.0:
+                loss = loss + stealth_weight * reduce_loss(delta.abs())
+
+            loss.backward()
+            opt.step()
+            sched.step(loss.item())
+
+            with torch.no_grad():
+                delta.data = project_delta(delta.data, eps, norm, adapter.projector)
+        with torch.no_grad():
+            y_adv = adapter.projector(y_clean + delta)
+            pred, _, _ = adapter.forward(y_adv, project=False)
+            score = float(attack_objective(pred, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon).item())
+        if score > best_score:
+                best_score = score
+                best_y_adv = y_adv.detach().clone()
+                best_delta = (best_y_adv - y_clean).detach().clone()
+
+    return AttackResult(y_adv=best_y_adv.detach(), delta=best_delta, runtime_sec=time.perf_counter() - start)
+
+def load_summary(example: str, data_root: Optional[str] = None) -> Dict:
     root = data_root or f"{example}_out"
-    if example == "ellipses":
-        return get_ellipse_dataloader(
-            init_recon=init_method,
-            batch_size=batch_size,
-            split=split,
-            n_train=n_train,
-            n_test=n_test,
-            data_root=root,
-            shuffle=False,
-            num_workers=num_workers,
-            device=None,
-            noise=noise,
-        )
-    
-    raise NotImplementedError("Lodopab not implemented")
-    return get_lodopab_dataloader(
-        init_recon=init_method,
-        batch_size=batch_size,
-        split=split,
-        n_train=n_train,
-        n_test=n_test,
-        data_root=root,
-        shuffle=False,
-        num_workers=num_workers,
-        device=None,
-    )
-
-def load_summary(example: str, noise: str, data_root: Optional[str] = None) -> Dict:
-    root = data_root or f"{example}_out"
-    summary_path = Path(root) / f"summary{noise}.json"
+    summary_path = Path(root) / f"summary.json"
     with open(summary_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -565,17 +553,16 @@ def load_model_checkpoint(
     radon,
     beta: float,
     device: torch.device,
-    noise: str,
     model_dir: Optional[str] = None,
 ) -> nn.Module:
     base = Path(model_dir) if model_dir else None
     candidates = [
         *(
-            [base / f"init_{init_method}{noise}" / f"checkpoints{noise}" / f"{model_name}_best.pt"]
+            [base / f"init_{init_method}" / f"checkpoints" / f"{model_name}_best.pt"]
             if base else []
         ),
-        Path(f"runs_{example}") / f"init_{init_method}{noise}" / f"checkpoints{noise}" / f"{model_name}_best.pt",
-        Path(f"checkpoints{noise}") / f"{model_name}_best.pt",
+        Path(f"runs_{example}") / f"init_{init_method}" / f"checkpoints" / f"{model_name}_best.pt",
+        Path(f"checkpoints") / f"{model_name}_best.pt",
     ]
     ckpt_path = next((p for p in candidates if p.exists()), None)
     if ckpt_path is None:
@@ -604,7 +591,6 @@ def evaluate_batch(
     adv_pred: torch.Tensor,
     delta: torch.Tensor,
     success_rel_l2_factor: float,
-    success_mse_factor: float,
     radon=None,
 ) -> List[Dict[str, float]]:
     rows: List[Dict[str, float]] = []
@@ -679,7 +665,6 @@ def evaluate_batch(
             "clean_sino_l2": clean_sino_l2,
             "adv_sino_l2": float(np.linalg.norm(adv_y_np.reshape(-1))),
             "success_rel_l2": float(adv_rel_l2 >= success_rel_l2_factor * max(clean_rel_l2, 1e-12)),
-            "success_mse": float(adv_mse >= success_mse_factor * max(clean_mse, 1e-12)),
         }
 
         if radon is not None:
@@ -694,12 +679,13 @@ def evaluate_batch(
             row.update({
                 "clean_e_ran_l2": clean_e_ran_l2,
                 "clean_e_nul_l2": clean_e_nul_l2,
-                "clean_e_ran_frac": clean_e_ran_l2 / max(clean_e_l2, 1e-12),
-                "clean_e_nul_frac": clean_e_nul_l2 / max(clean_e_l2, 1e-12),
+                "clean_e_ran_l2_frac": clean_e_ran_l2 / max(clean_e_l2, 1e-12),
+                "clean_e_nul_l2_frac": clean_e_nul_l2 / max(clean_e_l2, 1e-12),
                 "adv_e_ran_l2": adv_e_ran_l2,
                 "adv_e_nul_l2": adv_e_nul_l2,
-                "adv_e_ran_frac": adv_e_ran_l2 / max(adv_e_l2, 1e-12),
-                "adv_e_nul_frac": adv_e_nul_l2 / max(adv_e_l2, 1e-12),
+                "adv_e_ran_l2_frac": adv_e_ran_l2 / max(adv_e_l2, 1e-12),
+                "adv_e_nul_l2_frac": adv_e_nul_l2 / max(adv_e_l2, 1e-12),
+                "clean_e_ran_ssim": 
             })
 
             #   ||proj_ran(A x_hat) - y|| / ||y||   on the measured angles.
@@ -726,17 +712,8 @@ def evaluate_batch(
             # score it with the same image metrics as the full prediction. This shows
             # how much each error subspace degrades each metric on its own — e.g. how
             # much of the SSIM/PSNR drop is structural (null) vs data-consistent (range).
-            for cond, e_ran_t, e_nul_t in (("clean", e_ran_c, e_nul_c), ("adv", e_ran_a, e_nul_a)):
-                for sub, e_t in (("ran", e_ran_t), ("nul", e_nul_t)):
-                    part = gt_np + e_t.numpy().reshape(gt_np.shape)
-                    row.update({
-                        f"{cond}_rel_l2_{sub}": rel_l2_np(part, gt_np),
-                        f"{cond}_psnr_{sub}": psnr(part, gt_np),
-                        f"{cond}_ssim_{sub}": ssim(part, gt_np),
-                        f"{cond}_mae_{sub}": mae(part, gt_np),
-                        f"{cond}_nrmse_{sub}": nrmse(part, gt_np),
-                        f"{cond}_max_err_{sub}": max_abs_err(part, gt_np),
-                    })
+            row.update({f"clean_{k}": v for k, v in decompose_metrics(clean_pred[i:i+1] - x_gt[i:i+1], x_gt[i:i+1], radon).items()})
+            row.update({f"adv_{k}":   v for k, v in decompose_metrics(adv_pred[i:i+1]   - x_gt[i:i+1], x_gt[i:i+1], radon).items()})
 
             # Decompose the *init-reconstruction* error too, so we can see how the
             # attack distributes range vs null energy in the network input,
@@ -1103,14 +1080,9 @@ def run_attack(
     clean_pred: torch.Tensor,
     args,
     eps,
-    objective=None,
-    shift_weight=None,
 ) -> AttackResult:
-    # objective / shift_weight default to the CLI values but can be overridden so
-    # the channel-matrix and shift-weight-sweep analyses can reuse the
-    # exact same attack machinery with a different target.
-    objective = args.objective if objective is None else objective
-    shift_weight = args.shift_weight if shift_weight is None else shift_weight
+    objective = args.objective
+    shift_weight = args.shift_weight
     if attack_name == "fgsm":
         return fgsm_attack(
             adapter=adapter,
@@ -1639,83 +1611,48 @@ def run_extra_analyses(
 def parse():
     parser = argparse.ArgumentParser(description="Adversarial attacks for Radon reconstruction models.")
     parser.add_argument("--type", required=True, choices=["ellipses", "lodopab"])
-    parser.add_argument("--init", default="fbp", choices=["fbp", "pinv", "tv", "lw"], help="Initialization method")
-    parser.add_argument("--models", default="resnet,nsn,dpnsn,dpnsn_res")
-    parser.add_argument("--attacks", default="pgd,fgsm,spsa")
+    parser.add_argument("--init", default="pinv", choices=["fbp", "pinv", "tv", "lw"], help="Initialization method")
+    parser.add_argument("--models", default="nsn", choices=["resnet","nsn","dpnsn","dpnsn_res"])
+    parser.add_argument("--attacks", default="pgd", choices=["pgd", "spsa", "fgsm", "adam"])
     parser.add_argument("--norm", default="l2", choices=["l2", "linf"])
-    parser.add_argument("--eps", type=str, default="1.0",
-                        help="Attack budget multiplier(s). Comma-separated for a sweep, e.g. "
-                             "'0.01,0.05,0.1', which draws a robustness curve. For noisy data: "
-                             "eps_actual = eps * beta (noise norm). For zero-noise data: "
-                             "eps_actual = eps * mean_norm_y (sinogram norm), so eps=0.02 gives "
-                             "~2%% perturbation.")
+    parser.add_argument("--eps", type=str, default="0.01",  help="Attack budget multiplier(s). Comma-separated for a sweep, e.g.")
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--steps", type=int, default=40)
     parser.add_argument("--restarts", type=int, default=3)
-    parser.add_argument("--no-random-start", action="store_true")
-    parser.add_argument(
-        "--objective", default="mse",
-        choices=["mse", "shift", "hybrid", "null", "null_shift", "null_hybrid"],
-        help="Attack target. mse/shift/hybrid reward total error (on a data-consistent "
+    parser.add_argument("--objective", default="mse", choices=["mse", "shift", "hybrid", "null", "null_shift", "null_hybrid"], help="Attack target. mse/shift/hybrid reward total error (on a data-consistent "
              "NSN this is solved trivially by range-space corruption). null/null_shift "
              "reward only the null-space (structural/learned) error component; "
              "null_hybrid additionally penalises range-space error so the budget is "
              "spent on structural rather than trivial, data-consistent corruption.",
     )
     parser.add_argument("--shift-weight", type=float, default=0.25)
-    parser.add_argument("--attack-init-mode", default="exact", choices=["surrogate", "exact"])
-    parser.add_argument("--eval-init-mode", default="exact", choices=["surrogate", "exact"])
-    parser.add_argument(
-        "--noise-subspace", default="measured", choices=["measured", "null"],
-        help="Subspace the adversarial noise is forced into. 'measured' (default) is "
-             "the standard sinogram-domain attack. 'null' projects the network-input "
-             "perturbation onto null(A_la) (image domain) so the noise attacks the "
-             "null-space component the NSN controls.",
-    )
     parser.add_argument("--split", default="test", choices=["train", "test"])
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--n-train", type=int, default=4000)
     parser.add_argument("--n-test", type=int, default=1000)
-    parser.add_argument("--max-samples", type=int, default=32)
+    parser.add_argument("--max-samples", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--success-rel-l2-factor", type=float, default=1.5)
-    parser.add_argument("--success-mse-factor", type=float, default=2.0)
     parser.add_argument("--spsa-samples", type=int, default=16)
     parser.add_argument("--spsa-sigma", type=float, default=1e-2)
-    parser.add_argument("--stealth-weight", type=float, default=0.0)
     parser.add_argument(
         "--objective-matrix", default="",
         help="comma-separated objectives to sweep for the model x objective channel "
              "matrix, e.g. 'mse,null,null_hybrid'. Empty disables the matrix.",
     )
-    parser.add_argument(
-        "--shift-weight-sweep", default="",
+    parser.add_argument("--shift-weight-sweep", default="",
         help="comma-separated shift-weight values to sweep for the hybrid/null_hybrid "
              "objective, e.g. '0,0.25,1,4'. Empty disables the sweep.",
     )
-    parser.add_argument("--lipschitz", action="store_true",
-                        help="estimate the null-restricted local Lipschitz constant of each model.")
-    parser.add_argument("--lipschitz-samples", type=int, default=4,
-                        help="number of examples to average the Lipschitz estimate over.")
-    parser.add_argument("--lipschitz-iters", type=int, default=8,
-                        help="power-iteration steps for the Lipschitz estimate.")
-    parser.add_argument("--analysis-eps", type=float, default=None,
-                        help="Single attack budget used by the analyses (default: max of --eps).")
-    parser.add_argument("--analysis-attack", default=None,
-                        help="Attack used by the analyses (default: first of --attacks).")
-    parser.add_argument("--analysis-max-samples", type=int, default=None,
-                        help="Sample budget for the analyses (default: --max-samples).")
+    parser.add_argument("--lipschitz", action="store_true", help="estimate the null-restricted local Lipschitz constant of each model.")
+    parser.add_argument("--lipschitz-samples", type=int, default=4, help="number of examples to average the Lipschitz estimate over.")
+    parser.add_argument("--lipschitz-iters", type=int, default=8, help="power-iteration steps for the Lipschitz estimate.")
+    parser.add_argument("--analysis-max-samples", type=int, default=None, help="Sample budget for the analyses (default: --max-samples).")
     parser.add_argument("--adam-lr", type=float, default=0.01)
     parser.add_argument("--adam-patience", type=int, default=50)
     parser.add_argument("--adam-tv-weight", type=float, default=0.0)
     parser.add_argument("--adam-consistency-weight", type=float, default=0.0)
     parser.add_argument("--save-examples", type=int, default=6)
     parser.add_argument("--out-dir", default=None)
-    parser.add_argument("--tag", default=None,
-                        help="Label for the output directory (default: --type). Use to separate "
-                             "datasets that share a --type loader, e.g. rectangles vs ellipses, so "
-                             "their results do not overwrite each other.")
     parser.add_argument("--data-root", default=None, help="Path to {example}_out data directory (default: ./{type}_out)")
     parser.add_argument("--model-dir", default=None, help="Base dir containing runs_{type}/ checkpoints (default: .)")
     return parser.parse_args()
@@ -1727,269 +1664,256 @@ def main() -> None:
 
     example = args.type
     init_method = args.init.lower()
+    tag = args.tag or example
 
-    # Noise-level suffix appended to data/checkpoint names. create_ellipse_data.py
-    # writes each noise level into its own subfolder (e.g. <data_root>/0.0) using
-    # plain inner names (gt/, sino/, summary.json), and train.py saves checkpoints
-    # under <model_dir>/init_<init>/checkpoints/. We therefore use an empty suffix
-    # and expect --data-root to point at the noise subfolder, exactly like train.py's
-    # --data_dir. To sweep several noise levels, run once per subfolder.
+    out_root = Path(args.out_dir) if args.out_dir else Path(f"attack_runs_{tag}") / f"init_{init_method}"
+    out_root.mkdir(parents=True, exist_ok=True)
+
     eps_list = parse_float_list(args.eps)
-    for i in ("",):
-        summary = load_summary(example, i, data_root=args.data_root)
-        beta = float(summary["mean_norm_y_minus_y_delta"])
-        radon = build_radon(summary, device=device)
-        # eps is applied per sample as eps_i = eps_nominal * ||y_i|| (see the batch loop
-        # below), so it is a consistent fraction of *that sample's* signal norm: the same
-        # eps means the same relative perturbation for every image and at every noise
-        # level. mean_sino_norm is only a dataset-mean reference recorded in the summary;
-        # beta (the noise norm) is kept only for model construction.
-        mean_sino_norm = float(summary.get("mean_norm_y") or 0.0)
-        eps_scale = mean_sino_norm if mean_sino_norm > 0 else 1.0
-        loader = get_loader(
-            example=example,
-            init_method=init_method,
+     
+    attack_names = parse_list_arg(args.attacks)
+    model_names = parse_list_arg(args.models)
+    
+    summary = load_summary(example, data_root=args.data_root)
+    average_l2_noise = float(summary["mean_norm_y_minus_y_delta"])
+    mean_sino_norm = float(summary.get("mean_norm_y") or 0.0)
+    eps_scale = mean_sino_norm if mean_sino_norm > 0 else 1.0
+
+    print(f"Exporting config to {out_root}/config.json")
+    config = vars(args).copy()
+    config["device"] = str(device)
+    config["eps_list"] = eps_list
+    config["summary_path"] = str(Path(f"{example}_out") / f"summary.json")
+    with open(out_root / "config.json", "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+    print("Constructing Radon")
+    radon = build_radon(summary, device=device)
+    projector = lambda y: radon.proj_ran(y)
+
+    print("Constructing Dataloader")
+    if example == "ellipses":
+        loader = get_ellipse_dataloader(
+            init_recon=init_method,
             batch_size=args.batch_size,
             split=args.split,
             n_train=args.n_train,
             n_test=args.n_test,
             num_workers=args.num_workers,
             data_root=args.data_root,
-            noise=i,
+            shuffle=False,
+            device=device
         )
+    else:
+        raise NotImplementedError("Lodopab not implemented")
+        loader = get_lodopab_dataloader(
+        init_recon=init_method,
+        batch_size=args.batch_size,
+        split=args.split,
+        n_train=args.n_train,
+        n_test=args.n_test,
+        data_root=args.root,
+        shuffle=False,
+        num_workers=args.num_workers,
+        device=None,
+    )
 
-        init_reconstructor = InitReconstructor(example=example, init_method=init_method, summary=summary, radon=radon)
-        projector = lambda y: radon.proj_ran(y)
+    init_reconstructor = InitReconstructor(example=example, init_method=init_method, summary=summary, radon=radon)
+   
+    print("Data collection for attack runs")
+    scatter_all: Dict[str, Dict[str, List[Dict]]] = defaultdict(lambda: defaultdict(list))
+    decomp_by_eps: Dict[Tuple[str, float], Dict[str, List[Dict]]] = defaultdict(dict)
+    curve_rows: Dict[str, Dict[str, List[Dict]]] = defaultdict(lambda: defaultdict(list))
 
-        attack_names = parse_list_arg(args.attacks)
-        model_names = parse_list_arg(args.models)
-        tag = args.tag or example
-        out_root = Path(args.out_dir) if args.out_dir else Path(f"attack_runs_{tag}{i}") / f"init_{init_method}{i}"
-        out_root.mkdir(parents=True, exist_ok=True)
-
-        config = vars(args).copy()
-        config["device"] = str(device)
-        config["eps_list"] = eps_list
-        config["summary_path"] = str(Path(f"{example}{i}_out") / f"summary{i}.json")
-        with open(out_root / "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-        # Collections for the cross-run plots written after every model/attack/eps:
-        #   scatter_all[attack][model]         -> per-sample rows pooled over all eps
-        #   decomp_by_eps[(attack, eps)][model] -> per-sample rows for a single eps
-        #   curve_rows[attack][model]          -> one summary dict per eps (robustness curve)
-        scatter_all: Dict[str, Dict[str, List[Dict]]] = defaultdict(lambda: defaultdict(list))
-        decomp_by_eps: Dict[Tuple[str, float], Dict[str, List[Dict]]] = defaultdict(dict)
-        curve_rows: Dict[str, Dict[str, List[Dict]]] = defaultdict(lambda: defaultdict(list))
-
-        for model_name in model_names:
-            print("loading " + model_name)
-            model = load_model_checkpoint(
-                example=example,
-                init_method=init_method,
-                model_name=model_name,
-                radon=radon,
-                beta=beta,
-                device=device,
-                model_dir=args.model_dir,
-                noise=i
-            )
-            adapter = ModelAttackAdapter(
-                model=model,
-                init_reconstructor=init_reconstructor,
-                projector=projector,
-                attack_init_mode=args.attack_init_mode,
-            )
-            print("started caching of clean model outputs")
-            with torch.no_grad():
-                clean_rows_cache: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
-                sample_count = 0
-                for x_gt, x_init, y_delta in loader:
-                    x_gt = to_4d(x_gt).to(device)
-                    x_init = to_4d(x_init).to(device)
-                    y_delta = to_4d(y_delta).to(device)
-                    y_clean = adapter.projector(y_delta)
-                    clean_pred = adapter.model(x_init, y_clean)
-                    clean_rows_cache.append((x_gt, x_init, y_clean, clean_pred))
-                    sample_count += x_gt.shape[0]
-                    if sample_count >= args.max_samples:
-                        break
-            for attack_name in attack_names:
-                for eps_nominal in eps_list:
-                    # Reference (dataset-mean) budget, recorded for context only. The
-                    # budget actually applied is per-sample (eps_nominal * ||y_i||), below.
-                    eps_actual = eps_nominal * eps_scale
-                    result_dir = out_root / model_name / attack_name / f"{args.norm}_eps_{eps_nominal:g}"
-                    result_dir.mkdir(parents=True, exist_ok=True)
-
-                    rows: List[Dict[str, float]] = []
-                    example_rows: List[Dict] = []
-                    total_runtime = 0.0
-                    processed = 0
-
-                    for x_gt, clean_init, y_clean, clean_pred in clean_rows_cache:
-                        if processed >= args.max_samples:
-                            break
-
-                        # Per-sample L2 budget: eps_i = eps_nominal * ||y_i||, so every
-                        # sample gets the same relative perturbation regardless of its
-                        # sinogram norm (a single global budget over-attacks small-||y||
-                        # samples and under-attacks large ones).
-                        eps_batch = eps_nominal * l2_norm_batch(y_clean)
-
-                        # Reference for null-space noise projection (no-op unless
-                        # --noise-subspace null); use the attack init mode here.
-                        adapter.prepare_clean(y_clean, mode=args.attack_init_mode)
-
-                        attack_result = run_attack(
-                            attack_name=attack_name,
-                            adapter=adapter,
-                            x_gt=x_gt,
-                            y_clean=y_clean,
-                            clean_pred=clean_pred,
-                            args=args,
-                            eps=eps_batch,
-                        )
-                        total_runtime += attack_result.runtime_sec
-
-                        with torch.no_grad():
-                            # Re-cache the clean reference under the eval init mode so
-                            # the null-space projection at eval matches the attack.
-                            adapter.prepare_clean(y_clean, mode=args.eval_init_mode)
-                            adv_pred, adv_init, y_adv = adapter.forward(attack_result.y_adv, mode=args.eval_init_mode)
-
-                        batch_rows = evaluate_batch(
-                            x_gt=x_gt,
-                            clean_init=clean_init,
-                            clean_y=y_clean,
-                            clean_pred=clean_pred,
-                            adv_init=adv_init,
-                            adv_y=y_adv,
-                            adv_pred=adv_pred,
-                            delta=attack_result.delta,
-                            success_rel_l2_factor=args.success_rel_l2_factor,
-                            success_mse_factor=args.success_mse_factor,
-                            radon=radon,
-                        )
-                        rows.extend(batch_rows)
-
-                        remaining_slots = args.save_examples - len(example_rows)
-                        if remaining_slots > 0:
-                            for j in range(min(x_gt.shape[0], remaining_slots)):
-                                e_ran_clean, e_nul_clean = decompose_error(
-                                    clean_pred[j: j + 1] - x_gt[j: j + 1], radon
-                                )
-                                e_ran_adv, e_nul_adv = decompose_error(
-                                    adv_pred[j: j + 1] - x_gt[j: j + 1], radon
-                                )
-                                # Decomposition of the init-reconstruction error
-                                # (network input, before the NSN).
-                                e_ran_init_clean, e_nul_init_clean = decompose_error(
-                                    clean_init[j: j + 1] - x_gt[j: j + 1], radon
-                                )
-                                e_ran_init_adv, e_nul_init_adv = decompose_error(
-                                    adv_init[j: j + 1] - x_gt[j: j + 1], radon
-                                )
-                                fbp_delta = radon.fbp_la(attack_result.delta[j: j + 1])
-                                e_ran_fbp_d, _ = decompose_error(fbp_delta, radon)
-                                example_rows.append(
-                                    {
-                                        "x_gt": to_numpy_img(x_gt[j]),
-                                        "clean_init": to_numpy_img(clean_init[j]),
-                                        "adv_init": to_numpy_img(adv_init[j]),
-                                        "clean_pred": to_numpy_img(clean_pred[j]),
-                                        "adv_pred": to_numpy_img(adv_pred[j]),
-                                        "clean_y": to_numpy_img(y_clean[j]),
-                                        "adv_y": to_numpy_img(y_adv[j]),
-                                        "delta": to_numpy_img(attack_result.delta[j]),
-                                        "e_ran_clean": e_ran_clean.squeeze().numpy(),
-                                        "e_nul_clean": e_nul_clean.squeeze().numpy(),
-                                        "e_ran_adv": e_ran_adv.squeeze().numpy(),
-                                        "e_nul_adv": e_nul_adv.squeeze().numpy(),
-                                        "e_ran_init_clean": e_ran_init_clean.squeeze().numpy(),
-                                        "e_nul_init_clean": e_nul_init_clean.squeeze().numpy(),
-                                        "e_ran_init_adv": e_ran_init_adv.squeeze().numpy(),
-                                        "e_nul_init_adv": e_nul_init_adv.squeeze().numpy(),
-                                        "proj_ran_fbp_delta": e_ran_fbp_d.squeeze().numpy(),
-                                    }
-                                )
-
-                        processed += x_gt.shape[0]
-                        if processed >= args.max_samples:
-                            break
-
-                    summary_metrics = summarize_metrics(rows)
-                    summary_metrics["attack_runtime_total_sec"] = total_runtime
-                    summary_metrics["attack_runtime_per_example_sec"] = total_runtime / max(len(rows), 1)
-                    summary_metrics["model_name"] = model_name
-                    summary_metrics["attack_name"] = attack_name
-                    summary_metrics["norm"] = args.norm
-                    summary_metrics["eps"] = eps_nominal
-                    summary_metrics["eps_actual"] = eps_actual  # dataset-mean reference; budget is per-sample
-                    summary_metrics["eps_budget_mode"] = "per_sample_l2"
-                    summary_metrics["attack_init_mode"] = args.attack_init_mode
-                    summary_metrics["eval_init_mode"] = args.eval_init_mode
-
-                    with open(result_dir / "summary.json", "w", encoding="utf-8") as f:
-                        json.dump(summary_metrics, f, indent=2)
-
-                    if rows:
-                        fieldnames = list(rows[0].keys())
-                        with open(result_dir / "per_sample_metrics.csv", "w", encoding="utf-8", newline="") as f:
-                            writer = csv.DictWriter(f, fieldnames=fieldnames)
-                            writer.writeheader()
-                            writer.writerows(rows)
-                    save_examples(result_dir, example_rows)
-
-                    scatter_all[attack_name][model_name].extend(rows)
-                    decomp_by_eps[(attack_name, eps_nominal)][model_name] = rows
-                    curve_rows[attack_name][model_name].append({"eps": eps_nominal, **summary_metrics})
-
-                    print(
-                        f"[model={model_name} attack={attack_name} eps={eps_nominal:g}] "
-                        f"n={len(rows)} adv_rel_l2={summary_metrics.get('adv_rel_l2_mean', float('nan')):.4f} "
-                        f"success_rel_l2={summary_metrics.get('success_rel_l2_mean', float('nan')):.3f} "
-                        f"clean_rel_l2={summary_metrics.get('clean_rel_l2_mean', float('nan')):.3f}"
-                    )
-
-        # After every model/attack/eps for this noise level, write the cross-run plots.
-        # Per attack: the robustness curve (error vs eps) and the pooled sensitivity
-        # scatter. Per (attack, eps): the range/null error decomposition bar chart.
-        for att_name, rows_by_model in scatter_all.items():
-            plot_dir = out_root / att_name
-            plot_dir.mkdir(parents=True, exist_ok=True)
-            save_scatter_plot(plot_dir, rows_by_model)
-            save_robustness_curve(plot_dir, curve_rows[att_name], y_key="adv_rel_l2")
-            save_robustness_curve(plot_dir, curve_rows[att_name], y_key="adv_psnr")
-            save_error_components_curve(plot_dir, curve_rows[att_name])
-
-        for (att_name, eps_nominal), rows_by_model in decomp_by_eps.items():
-            decomp_dir = out_root / att_name / f"eps_{eps_nominal:g}"
-            decomp_dir.mkdir(parents=True, exist_ok=True)
-            save_decomposition_bar(decomp_dir, rows_by_model)
-            save_decomposition_bar(
-                decomp_dir,
-                rows_by_model,
-                clean_key="clean_init_e_nul_frac",
-                adv_key="adv_init_e_nul_frac",
-                fname="decomp_init_nul_frac.png",
-                title="Init null-space fraction of error (before NSN): clean vs adversarial (median)",
-            )
-            save_null_growth_headline(decomp_dir, rows_by_model, eps_nominal, att_name)
-            save_consistency_plot(decomp_dir, rows_by_model, eps_nominal)
-
-        run_extra_analyses(
-            args=args,
-            radon=radon,
-            beta=beta,
-            device=device,
-            loader=loader,
-            init_reconstructor=init_reconstructor,
-            projector=projector,
-            out_root=out_root,
+    for model_name in model_names:
+        print("loading " + model_name)
+        model = load_model_checkpoint(
             example=example,
             init_method=init_method,
-            noise=i,
+            model_name=model_name,
+            radon=radon,
+            beta=average_l2_noise,
+            device=device,
+            model_dir=args.model_dir
         )
+        adapter = ModelAttackAdapter(
+            model=model,
+            init_reconstructor=init_reconstructor,
+            projector=projector,
+            attack_init_mode=args.init,
+        )
+
+        print("started caching of clean model outputs")
+        with torch.no_grad():
+            clean_rows_cache: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+            sample_count = 0
+            for x_gt, x_init, y_delta in loader:
+                x_gt = to_4d(x_gt).to(device)
+                x_init = to_4d(x_init).to(device)
+                y_delta = to_4d(y_delta).to(device)
+                if torch.linalg.norm(y_delta - y_clean) > 1e-8:
+                    print("Something went wrong with the noise")
+                    raise ValueError("Problem.")
+                y_clean = adapter.projector(y_delta)
+                clean_pred = adapter.model(x_init, y_clean)
+                clean_rows_cache.append((x_gt, x_init, y_clean, clean_pred))
+                sample_count += x_gt.shape[0]
+                if sample_count >= args.max_samples:
+                    break
+        print("starting attack")
+        for attack_name in attack_names:
+            for eps_nominal in eps_list:
+                # Reference (dataset-mean) budget, recorded for context only. The
+                # budget actually applied is per-sample (eps_nominal * ||y_i||), below.
+                eps_actual = eps_nominal * eps_scale
+                result_dir = out_root / model_name / attack_name / f"{args.norm}_eps_{eps_nominal:g}"
+                result_dir.mkdir(parents=True, exist_ok=True)
+                rows: List[Dict[str, float]] = []
+                example_rows: List[Dict] = []
+                total_runtime = 0.0
+                processed = 0
+                for x_gt, clean_init, y_clean, clean_pred in clean_rows_cache:
+                    if processed >= args.max_samples:
+                        break
+                    # Per-sample L2 budget:
+                    eps_batch = eps_nominal * l2_norm_batch(y_clean)
+                    
+                    attack_result = run_attack(
+                        attack_name=attack_name,
+                        adapter=adapter,
+                        x_gt=x_gt,
+                        y_clean=y_clean,
+                        clean_pred=clean_pred,
+                        args=args,
+                        eps=eps_batch,
+                    )
+                    total_runtime += attack_result.runtime_sec
+
+                    print("Evaluating attack")
+                    with torch.no_grad():
+                        adv_pred, adv_init, y_adv = adapter.forward(attack_result.y_adv, mode=args.eval_init_mode)
+                    batch_rows = evaluate_batch(
+                        x_gt=x_gt,
+                        clean_init=clean_init,
+                        clean_y=y_clean,
+                        clean_pred=clean_pred,
+                        adv_init=adv_init,
+                        adv_y=y_adv,
+                        adv_pred=adv_pred,
+                        delta=attack_result.delta,
+                        success_rel_l2_factor=args.success_rel_l2_factor,
+                        radon=radon,
+                    )
+                    rows.extend(batch_rows)
+                    remaining_slots = args.save_examples - len(example_rows)
+                    if remaining_slots > 0:
+                        for j in range(min(x_gt.shape[0], remaining_slots)):
+                            e_ran_clean, e_nul_clean = decompose_error(
+                                clean_pred[j: j + 1] - x_gt[j: j + 1], radon
+                            )
+                            e_ran_adv, e_nul_adv = decompose_error(
+                                adv_pred[j: j + 1] - x_gt[j: j + 1], radon
+                            )
+                            # Decomposition of the init-reconstruction error
+                            # (network input, before the NSN).
+                            e_ran_init_clean, e_nul_init_clean = decompose_error(
+                                clean_init[j: j + 1] - x_gt[j: j + 1], radon
+                            )
+                            e_ran_init_adv, e_nul_init_adv = decompose_error(
+                                adv_init[j: j + 1] - x_gt[j: j + 1], radon
+                            )
+                            fbp_delta = radon.fbp_la(attack_result.delta[j: j + 1])
+                            e_ran_fbp_d, _ = decompose_error(fbp_delta, radon)
+                            example_rows.append(
+                                {
+                                    "x_gt": to_numpy_img(x_gt[j]),
+                                    "clean_init": to_numpy_img(clean_init[j]),
+                                    "adv_init": to_numpy_img(adv_init[j]),
+                                    "clean_pred": to_numpy_img(clean_pred[j]),
+                                    "adv_pred": to_numpy_img(adv_pred[j]),
+                                    "clean_y": to_numpy_img(y_clean[j]),
+                                    "adv_y": to_numpy_img(y_adv[j]),
+                                    "delta": to_numpy_img(attack_result.delta[j]),
+                                    "e_ran_clean": e_ran_clean.squeeze().numpy(),
+                                    "e_nul_clean": e_nul_clean.squeeze().numpy(),
+                                    "e_ran_adv": e_ran_adv.squeeze().numpy(),
+                                    "e_nul_adv": e_nul_adv.squeeze().numpy(),
+                                    "e_ran_init_clean": e_ran_init_clean.squeeze().numpy(),
+                                    "e_nul_init_clean": e_nul_init_clean.squeeze().numpy(),
+                                    "e_ran_init_adv": e_ran_init_adv.squeeze().numpy(),
+                                    "e_nul_init_adv": e_nul_init_adv.squeeze().numpy(),
+                                    "proj_ran_fbp_delta": e_ran_fbp_d.squeeze().numpy(),
+                                }
+                            )
+                    processed += x_gt.shape[0]
+                    if processed >= args.max_samples:
+                        break
+                summary_metrics = summarize_metrics(rows)
+                summary_metrics["attack_runtime_total_sec"] = total_runtime
+                summary_metrics["attack_runtime_per_example_sec"] = total_runtime / max(len(rows), 1)
+                summary_metrics["model_name"] = model_name
+                summary_metrics["attack_name"] = attack_name
+                summary_metrics["norm"] = args.norm
+                summary_metrics["eps"] = eps_nominal
+                summary_metrics["eps_actual"] = eps_actual  # dataset-mean reference; budget is per-sample
+                summary_metrics["eps_budget_mode"] = "per_sample_l2"
+                summary_metrics["attack_init_mode"] = args.attack_init_mode
+                summary_metrics["eval_init_mode"] = args.eval_init_mode
+                with open(result_dir / "summary.json", "w", encoding="utf-8") as f:
+                    json.dump(summary_metrics, f, indent=2)
+                if rows:
+                    fieldnames = list(rows[0].keys())
+                    with open(result_dir / "per_sample_metrics.csv", "w", encoding="utf-8", newline="") as f:
+                        writer = csv.DictWriter(f, fieldnames=fieldnames)
+                        writer.writeheader()
+                        writer.writerows(rows)
+                save_examples(result_dir, example_rows)
+                scatter_all[attack_name][model_name].extend(rows)
+                decomp_by_eps[(attack_name, eps_nominal)][model_name] = rows
+                curve_rows[attack_name][model_name].append({"eps": eps_nominal, **summary_metrics})
+                print(
+                    f"[model={model_name} attack={attack_name} eps={eps_nominal:g}] "
+                    f"n={len(rows)} adv_rel_l2={summary_metrics.get('adv_rel_l2_mean', float('nan')):.4f} "
+                    f"success_rel_l2={summary_metrics.get('success_rel_l2_mean', float('nan')):.3f} "
+                    f"clean_rel_l2={summary_metrics.get('clean_rel_l2_mean', float('nan')):.3f}"
+                )
+    # After every model/attack/eps for this noise level, write the cross-run plots.
+    # Per attack: the robustness curve (error vs eps) and the pooled sensitivity
+    # scatter. Per (attack, eps): the range/null error decomposition bar chart.
+    for att_name, rows_by_model in scatter_all.items():
+        plot_dir = out_root / att_name
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        save_scatter_plot(plot_dir, rows_by_model)
+        save_robustness_curve(plot_dir, curve_rows[att_name], y_key="adv_rel_l2")
+        save_robustness_curve(plot_dir, curve_rows[att_name], y_key="adv_psnr")
+        save_error_components_curve(plot_dir, curve_rows[att_name])
+    for (att_name, eps_nominal), rows_by_model in decomp_by_eps.items():
+        decomp_dir = out_root / att_name / f"eps_{eps_nominal:g}"
+        decomp_dir.mkdir(parents=True, exist_ok=True)
+        save_decomposition_bar(decomp_dir, rows_by_model)
+        save_decomposition_bar(
+            decomp_dir,
+            rows_by_model,
+            clean_key="clean_init_e_nul_frac",
+            adv_key="adv_init_e_nul_frac",
+            fname="decomp_init_nul_frac.png",
+            title="Init null-space fraction of error (before NSN): clean vs adversarial (median)",
+        )
+        save_null_growth_headline(decomp_dir, rows_by_model, eps_nominal, att_name)
+        save_consistency_plot(decomp_dir, rows_by_model, eps_nominal)
+    run_extra_analyses(
+        args=args,
+        radon=radon,
+        beta=average_l2_noise,
+        device=device,
+        loader=loader,
+        init_reconstructor=init_reconstructor,
+        projector=projector,
+        out_root=out_root,
+        example=example,
+        init_method=init_method,
+        noise=i,
+    )
 
 
 if __name__ == "__main__":
