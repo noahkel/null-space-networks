@@ -291,6 +291,30 @@ def decompose_error(
     e_ran, e_nul = radon.decompose_error(e, iters=iters, tol=tol)
     return e_ran.detach().cpu(), e_nul.detach().cpu()
 
+@torch.no_grad()
+def decompose_metrics(e: torch.Tensor, x_gt: torch.Tensor, radon,
+                      iters: int = 50, tol: float = 1e-6) -> dict:
+    """Per-subspace image metrics for an error e = x_hat - x_gt.
+
+    L2 energy splits exactly (‖e‖² = ‖e_ran‖² + ‖e_nul‖²), but SSIM/PSNR/… are
+    non-additive, so they can't be split from the norms. Instead we rebuild the
+    reconstruction carrying only the range (x_gt + e_ran) or null (x_gt + e_nul)
+    error component and score each with the standard image metrics.
+
+    Returns a flat dict: rel_l2_ran, psnr_nul, ssim_ran, ... (suffix _ran/_nul).
+    """
+    e_ran, e_nul = decompose_error(e, radon, iters=iters, tol=tol)   # detached CPU tensors
+    gt_np = x_gt.detach().cpu().numpy().squeeze()
+    out = {}
+    for sub, e_t in (("ran", e_ran), ("nul", e_nul)):
+        part = gt_np + e_t.numpy().reshape(gt_np.shape)
+        out[f"rel_l2_{sub}"]  = rel_l2_np(part, gt_np)
+        out[f"psnr_{sub}"]    = psnr(part, gt_np)
+        out[f"ssim_{sub}"]    = ssim(part, gt_np)
+        out[f"mae_{sub}"]     = mae(part, gt_np)
+        out[f"nrmse_{sub}"]   = nrmse(part, gt_np)
+        out[f"max_err_{sub}"] = max_abs_err(part, gt_np)
+    return out
 
 def build_models(
     which: List[str],
