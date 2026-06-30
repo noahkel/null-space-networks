@@ -49,7 +49,11 @@ INIT=pinv
 MODELS="nsn,resnet"          # add dpnsn,dpnsn_res if those checkpoints exist
 ATTACK="adam"
 NORM="l2"
-
+IMG_SIZE=128
+MIN_ANGLE=0
+MAX_ANGLE=120
+NUM_THETAS=180
+N_SAMPLES=5000
 # Per-sample eps is scaled by ||y_i|| inside attack.py, so the same fraction is a
 # comparable perturbation across noise levels.
 EPS_SWEEP="0.005,0.01,0.02,0.05"   # robustness curve (sample budget, for speed)
