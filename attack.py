@@ -684,8 +684,7 @@ def evaluate_batch(
                 "adv_e_ran_l2": adv_e_ran_l2,
                 "adv_e_nul_l2": adv_e_nul_l2,
                 "adv_e_ran_l2_frac": adv_e_ran_l2 / max(adv_e_l2, 1e-12),
-                "adv_e_nul_l2_frac": adv_e_nul_l2 / max(adv_e_l2, 1e-12),
-                "clean_e_ran_ssim": 
+                "adv_e_nul_l2_frac": adv_e_nul_l2 / max(adv_e_l2, 1e-12), 
             })
 
             #   ||proj_ran(A x_hat) - y|| / ||y||   on the measured angles.
