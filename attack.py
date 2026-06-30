@@ -1189,7 +1189,6 @@ def attack_over_cache(
         if processed >= max_samples:
             break
         eps_batch = eps_nominal * l2_norm_batch(y_clean)
-        adapter.prepare_clean(y_clean, mode=args.attack_init_mode)
         result = run_attack(
             attack_name=attack_name,
             adapter=adapter,
@@ -1198,11 +1197,8 @@ def attack_over_cache(
             clean_pred=clean_pred,
             args=args,
             eps=eps_batch,
-            objective=objective,
-            shift_weight=shift_weight,
         )
         with torch.no_grad():
-            adapter.prepare_clean(y_clean, mode=args.eval_init_mode)
             adv_pred, adv_init, y_adv = adapter.forward(result.y_adv, mode=args.eval_init_mode)
         rows.extend(evaluate_batch(
             x_gt=x_gt,
@@ -1214,7 +1210,6 @@ def attack_over_cache(
             adv_pred=adv_pred,
             delta=result.delta,
             success_rel_l2_factor=args.success_rel_l2_factor,
-            success_mse_factor=args.success_mse_factor,
             radon=radon,
         ))
         processed += x_gt.shape[0]
@@ -1252,7 +1247,7 @@ def save_null_growth_headline(
     ax.set_xticks(x)
     ax.set_xticklabels(models)
     ax.set_ylabel("||error component||  (median)")
-    ax.set_title("Headline - null-space error growth under attack "
+    ax.set_title("null-space error growth under attack "
                  "(%s, eps=%g)\nfair signal = growth of ||e_nul||; ||e_ran|| is the shared floor"
                  % (attack_name, eps), fontsize=9)
     ax.legend(fontsize=8)
@@ -1530,7 +1525,6 @@ def run_extra_analyses(
     out_root: Path,
     example: str,
     init_method: str,
-    noise: str,
 ) -> None:
     """Drive the opt-in analyses. Loops each model once, builds one clean
     cache, and runs whichever analyses are enabled."""
@@ -1555,7 +1549,7 @@ def run_extra_analyses(
         print("[analysis] loading " + model_name)
         model = load_model_checkpoint(
             example=example, init_method=init_method, model_name=model_name,
-            radon=radon, beta=beta, device=device, model_dir=args.model_dir, noise=noise,
+            radon=radon, beta=beta, device=device, model_dir=args.model_dir,
         )
         adapter = ModelAttackAdapter(
             model=model, init_reconstructor=init_reconstructor, projector=projector,
@@ -1886,6 +1880,7 @@ def main() -> None:
         save_scatter_plot(plot_dir, rows_by_model)
         save_robustness_curve(plot_dir, curve_rows[att_name], y_key="adv_rel_l2")
         save_robustness_curve(plot_dir, curve_rows[att_name], y_key="adv_psnr")
+        save_robustness_curve(plot_dir, curve_rows[att_name], y_key="adv_ssim")
         save_error_components_curve(plot_dir, curve_rows[att_name])
     for (att_name, eps_nominal), rows_by_model in decomp_by_eps.items():
         decomp_dir = out_root / att_name / f"eps_{eps_nominal:g}"
@@ -1912,7 +1907,6 @@ def main() -> None:
         out_root=out_root,
         example=example,
         init_method=init_method,
-        noise=i,
     )
 
 
