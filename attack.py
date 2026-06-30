@@ -222,6 +222,34 @@ class ModelAttackAdapter:
         pred = self.model(x_init, y_adv)
         return pred, x_init, y_adv
 
+# FEATURE 1: the range/data-consistent objectives can also be requested under the
+# "support" name (the user's preferred terminology for the range / support component).
+# These aliases are canonicalised to the existing range* objective implementations.
+_OBJECTIVE_ALIASES = {
+    "support": "range",
+    "support_shift": "range_shift",
+    "support_hybrid": "range_hybrid",
+}
+
+def canonical_objective(objective: str) -> str:
+    """Map user-facing objective aliases (support*) to the internal name (range*)."""
+    return _OBJECTIVE_ALIASES.get(objective, objective)
+
+def build_target(target_kind: str, x_gt: torch.Tensor, clean_pred: torch.Tensor) -> torch.Tensor:
+    """FEATURE 5: construct the target image for the 'targeted' objective.
+
+    'zero'  -> all-zero image (drive the reconstruction to blank / everything 0)
+    'gt'    -> the ground-truth image
+    'clean' -> the unattacked clean prediction
+    """
+    if target_kind == "zero":
+        return torch.zeros_like(x_gt)
+    if target_kind == "gt":
+        return x_gt.detach().clone()
+    if target_kind == "clean":
+        return clean_pred.detach().clone()
+    raise ValueError(f"Unknown target kind '{target_kind}'")
+
 def attack_objective(
     pred: torch.Tensor,
     x_gt: torch.Tensor,
@@ -258,11 +286,19 @@ def attack_objective(
       range_shift  : ‖P_range s‖²                (range shift vs clean pred)
       range_hybrid : ‖P_range e‖² - λ‖P_null e‖²  (range error, penalising the null
                                                   component, mirror of null_hybrid)
+
+      The range objectives are also reachable via the aliases support / support_shift /
+      support_hybrid (the "support" / data-consistent component) — see canonical_objective.
     """
+    objective = canonical_objective(objective)
     gt_term = reduce_loss((pred - x_gt) ** 2)
     shift_term = reduce_loss((pred - clean_pred.detach()) ** 2)
-    target_term = reduce_loss((pred - target.detach()) **2)
     if objective == "targeted":
+        # Drive the reconstruction towards `target` (e.g. the all-zero image,
+        # FEATURE 5). Maximising -‖pred - target‖² == minimising the distance.
+        if target is None:
+            target = torch.zeros_like(pred)
+        target_term = reduce_loss((pred - target.detach()) ** 2)
         return -target_term
     if objective == "mse":
         return gt_term
@@ -307,13 +343,14 @@ def fgsm_attack(
     objective: str,
     shift_weight: float,
     stealth_weight: float = 0.0,
+    target: torch.Tensor = None,
 ) -> AttackResult:
     start = time.perf_counter()
     with torch.no_grad():
         y_proj = adapter.projector(y_clean)
     y_adv = y_clean.detach().clone().requires_grad_(True)
     pred, _, y_adv = adapter.forward(y_adv, project=False)
-    loss = attack_objective(pred, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon)
+    loss = attack_objective(pred, x_gt, clean_pred, objective, shift_weight, target=target, radon=adapter.init_reconstructor.radon)
     if stealth_weight > 0.0:
         loss = loss - stealth_weight * reduce_loss((y_adv - y_clean.detach()).abs())
     grad = torch.autograd.grad(loss, y_adv, retain_graph=False, create_graph=False)[0]
@@ -345,6 +382,7 @@ def pgd_attack(
     shift_weight: float,
     random_start: bool,
     stealth_weight: float = 0.0,
+    target: torch.Tensor = None,
 ) -> AttackResult:
     start = time.perf_counter()
     best_y_adv = y_clean.detach().clone()
@@ -360,7 +398,7 @@ def pgd_attack(
                 y_proj = adapter.projector(y_clean + delta)
             y_adv = (y_clean + delta).detach().requires_grad_(True)
             pred, _, _ = adapter.forward(y_adv, project=False)
-            loss = attack_objective(pred, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon)
+            loss = attack_objective(pred, x_gt, clean_pred, objective, shift_weight, target=target, radon=adapter.init_reconstructor.radon)
             if stealth_weight > 0.0:
                 loss = loss - stealth_weight * reduce_loss((y_adv - y_clean.detach()).abs())
             grad = torch.autograd.grad(loss, y_adv, retain_graph=False, create_graph=False)[0]
@@ -378,7 +416,7 @@ def pgd_attack(
         with torch.no_grad():
             y_adv = adapter.projector(y_clean + delta)
             pred, _, _ = adapter.forward(y_adv, project=False)
-            score = float(attack_objective(pred, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon).item())
+            score = float(attack_objective(pred, x_gt, clean_pred, objective, shift_weight, target=target, radon=adapter.init_reconstructor.radon).item())
             if score > best_score:
                 best_score = score
                 best_y_adv = y_adv.detach().clone()
@@ -400,6 +438,7 @@ def spsa_attack(
     objective: str,
     shift_weight: float,
     stealth_weight: float = 0.0,
+    target: torch.Tensor = None,
 ) -> AttackResult:
     start = time.perf_counter()
     delta = torch.zeros_like(y_clean)
@@ -416,8 +455,8 @@ def spsa_attack(
             with torch.no_grad():
                 pred_plus, _, _ = adapter.forward(y_plus, mode="exact")
                 pred_minus, _, _ = adapter.forward(y_minus, mode="exact")
-                loss_plus = attack_objective(pred_plus, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon)
-                loss_minus = attack_objective(pred_minus, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon)
+                loss_plus = attack_objective(pred_plus, x_gt, clean_pred, objective, shift_weight, target=target, radon=adapter.init_reconstructor.radon)
+                loss_minus = attack_objective(pred_minus, x_gt, clean_pred, objective, shift_weight, target=target, radon=adapter.init_reconstructor.radon)
 
             grad_est = grad_est + ((loss_plus - loss_minus) / (2.0 * sigma)) * direction
 
@@ -461,6 +500,7 @@ def adam_attack(
     stealth_weight: float = 0.0,
     restarts: int = 4,
     random_start: bool = True,
+    target: torch.Tensor = None,
 ) -> AttackResult:
     start = time.perf_counter()
     best_y_adv = y_clean.detach().clone()
@@ -483,7 +523,7 @@ def adam_attack(
             pred, x_init, _ = adapter.forward(y_adv, project=False)
 
             # Negate because Adam minimizes, but we want to maximize reconstruction error
-            loss = -attack_objective(pred, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon)
+            loss = -attack_objective(pred, x_gt, clean_pred, objective, shift_weight, target=target, radon=adapter.init_reconstructor.radon)
 
             if tv_weight > 0.0:
                 loss = loss + tv_weight * total_variation(pred)
@@ -503,7 +543,7 @@ def adam_attack(
         with torch.no_grad():
             y_adv = adapter.projector(y_clean + delta)
             pred, _, _ = adapter.forward(y_adv, project=False)
-            score = float(attack_objective(pred, x_gt, clean_pred, objective, shift_weight, radon=adapter.init_reconstructor.radon).item())
+            score = float(attack_objective(pred, x_gt, clean_pred, objective, shift_weight, target=target, radon=adapter.init_reconstructor.radon).item())
         if score > best_score:
                 best_score = score
                 best_y_adv = y_adv.detach().clone()
@@ -591,7 +631,9 @@ def evaluate_batch(
     adv_pred: torch.Tensor,
     delta: torch.Tensor,
     success_rel_l2_factor: float,
+    success_mse_factor: float = 2.0,
     radon=None,
+    target: torch.Tensor = None,
 ) -> List[Dict[str, float]]:
     rows: List[Dict[str, float]] = []
     batch_size = x_gt.shape[0]
@@ -665,7 +707,31 @@ def evaluate_batch(
             "clean_sino_l2": clean_sino_l2,
             "adv_sino_l2": float(np.linalg.norm(adv_y_np.reshape(-1))),
             "success_rel_l2": float(adv_rel_l2 >= success_rel_l2_factor * max(clean_rel_l2, 1e-12)),
+            # Restored: MSE-based success criterion (was referenced in summarize_metrics
+            # but never produced here, which crashed the run).
+            "success_mse": float(adv_mse >= success_mse_factor * max(clean_mse, 1e-12)),
         }
+
+        # FEATURE 5: when a target image is supplied (e.g. the all-zero image for the
+        # targeted attack), document how close each reconstruction gets to it.
+        if target is not None:
+            target_np = to_numpy_img(target[i])
+            target_norm = float(np.linalg.norm(target_np.ravel()))
+            gt_norm_i = max(float(np.linalg.norm(gt_np.ravel())), 1e-12)
+            clean_to_target = float(np.linalg.norm((clean_pred_np - target_np).ravel()))
+            adv_to_target = float(np.linalg.norm((adv_pred_np - target_np).ravel()))
+            row.update({
+                "target_norm": target_norm,
+                "clean_to_target_l2": clean_to_target,
+                "adv_to_target_l2": adv_to_target,
+                # Distance to the target, normalised by ||x_gt|| so it is comparable
+                # across samples. For target=zero this is ||recon|| / ||x_gt||, i.e.
+                # how dark the attack drives the reconstruction (0 == fully blanked).
+                "clean_to_target_rel": clean_to_target / gt_norm_i,
+                "adv_to_target_rel": adv_to_target / gt_norm_i,
+                # Fraction of the energy removed vs the clean prediction.
+                "target_drop_frac": 1.0 - adv_to_target / max(clean_to_target, 1e-12),
+            })
 
         if radon is not None:
             e_ran_c, e_nul_c = decompose_error(clean_pred[i: i + 1] - x_gt[i: i + 1], radon)
@@ -1059,7 +1125,12 @@ def summarize_metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
         for metric in ("rel_l2", "psnr", "ssim", "mae", "nrmse", "max_err")
         for sub in ("ran", "nul")
     ]
-    keys = keys + [k for k in decomp_keys if k in rows[0]]
+    # FEATURE 5: targeted-attack distance metrics (present only when a target was set).
+    target_keys = [
+        "target_norm", "clean_to_target_l2", "adv_to_target_l2",
+        "clean_to_target_rel", "adv_to_target_rel", "target_drop_frac",
+    ]
+    keys = keys + [k for k in decomp_keys if k in rows[0]] + [k for k in target_keys if k in rows[0]]
     for key in keys:
         values = [float(row[key]) for row in rows]
         mean, half_width = confidence_interval_95(values)
@@ -1079,9 +1150,19 @@ def run_attack(
     clean_pred: torch.Tensor,
     args,
     eps,
+    objective: str = None,
+    shift_weight: float = None,
 ) -> AttackResult:
-    objective = args.objective
-    shift_weight = args.shift_weight
+    # Allow the objective / shift-weight to be overridden (used by the objective
+    # matrix and shift-weight sweep). Previously these were ignored, so every cell
+    # of the matrix re-ran args.objective -- a silent bug that is now fixed.
+    objective = canonical_objective(objective if objective is not None else args.objective)
+    shift_weight = shift_weight if shift_weight is not None else args.shift_weight
+    # FEATURE 5: build the target image once per attack call when the objective is
+    # 'targeted' (e.g. the all-zero image). None for every other objective.
+    target = None
+    if objective == "targeted":
+        target = build_target(getattr(args, "target", "zero"), x_gt, clean_pred)
     if attack_name == "fgsm":
         return fgsm_attack(
             adapter=adapter,
@@ -1093,6 +1174,7 @@ def run_attack(
             objective=objective,
             shift_weight=shift_weight,
             stealth_weight=args.stealth_weight,
+            target=target,
         )
 
     if attack_name == "pgd":
@@ -1110,6 +1192,7 @@ def run_attack(
             shift_weight=shift_weight,
             random_start=not args.no_random_start,
             stealth_weight=args.stealth_weight,
+            target=target,
         )
 
     if attack_name == "spsa":
@@ -1127,6 +1210,7 @@ def run_attack(
             objective=objective,
             shift_weight=shift_weight,
             stealth_weight=args.stealth_weight,
+            target=target,
         )
 
     if attack_name == "adam":
@@ -1145,6 +1229,7 @@ def run_attack(
             tv_weight=args.adam_tv_weight,
             consistency_weight=args.adam_consistency_weight,
             stealth_weight=args.stealth_weight,
+            target=target,
         )
 
     raise ValueError(f"Unknown attack '{attack_name}'")
@@ -1196,6 +1281,8 @@ def attack_over_cache(
             clean_pred=clean_pred,
             args=args,
             eps=eps_batch,
+            objective=objective,          # honour the swept objective (matrix / sweep)
+            shift_weight=shift_weight,     # honour the swept shift-weight
         )
         with torch.no_grad():
             adv_pred, adv_init, y_adv = adapter.forward(result.y_adv, mode=args.eval_init_mode)
@@ -1209,6 +1296,7 @@ def attack_over_cache(
             adv_pred=adv_pred,
             delta=result.delta,
             success_rel_l2_factor=args.success_rel_l2_factor,
+            success_mse_factor=args.success_mse_factor,
             radon=radon,
         ))
         processed += x_gt.shape[0]
@@ -1605,24 +1693,45 @@ def parse():
     parser = argparse.ArgumentParser(description="Adversarial attacks for Radon reconstruction models.")
     parser.add_argument("--type", required=True, choices=["ellipses", "lodopab"])
     parser.add_argument("--init", default="pinv", choices=["fbp", "pinv", "tv", "lw"], help="Initialization method")
-    parser.add_argument("--models", default="nsn", choices=["resnet","nsn","dpnsn","dpnsn_res"])
-    parser.add_argument("--attacks", default="pgd", choices=["pgd", "spsa", "fgsm", "adam"])
+    parser.add_argument("--models", default="nsn",
+                        help="Comma-separated model list, e.g. 'resnet,nsn,dpnsn,dpnsn_res'.")
+    parser.add_argument("--attacks", default="pgd",
+                        help="Comma-separated attack list, e.g. 'pgd,spsa,fgsm,adam'.")
     parser.add_argument("--norm", default="l2", choices=["l2", "linf"])
     parser.add_argument("--eps", type=str, default="0.01",  help="Attack budget multiplier(s). Comma-separated for a sweep, e.g.")
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--steps", type=int, default=40)
     parser.add_argument("--restarts", type=int, default=3)
-    parser.add_argument("--objective", default="mse", choices=["mse", "shift", "hybrid", "null", "null_shift", "null_hybrid"], help="Attack target. mse/shift/hybrid reward total error (on a data-consistent "
+    parser.add_argument(
+        "--objective", default="mse",
+        choices=["mse", "shift", "hybrid",
+                 "null", "null_shift", "null_hybrid",
+                 "range", "range_shift", "range_hybrid",
+                 "support", "support_shift", "support_hybrid",
+                 "targeted"],
+        help="Attack target. mse/shift/hybrid reward total error (on a data-consistent "
              "NSN this is solved trivially by range-space corruption). null/null_shift "
              "reward only the null-space (structural/learned) error component; "
              "null_hybrid additionally penalises range-space error so the budget is "
-             "spent on structural rather than trivial, data-consistent corruption.",
+             "spent on structural rather than trivial, data-consistent corruption. "
+             "range/range_shift/range_hybrid (aliases support/support_shift/support_hybrid) "
+             "mirror the null objectives but focus the attack on the range / data-consistent "
+             "(support) component instead [FEATURE 1]. targeted drives the reconstruction "
+             "towards --target (e.g. the all-zero image) [FEATURE 5].",
+    )
+    parser.add_argument(
+        "--target", default="zero", choices=["zero", "gt", "clean"],
+        help="Target image for --objective targeted [FEATURE 5]. 'zero' drives the "
+             "reconstruction towards the all-zero image; 'gt' towards the ground truth; "
+             "'clean' towards the unattacked clean prediction.",
     )
     parser.add_argument("--shift-weight", type=float, default=0.25)
     parser.add_argument("--split", default="test", choices=["train", "test"])
     parser.add_argument("--n-train", type=int, default=4000)
     parser.add_argument("--n-test", type=int, default=1000)
-    parser.add_argument("--max-samples", type=int, default=64)
+    parser.add_argument("--max-samples", type=int, default=64,
+                        help="Number of test samples to attack/evaluate per run. "
+                             "-1 evaluates the whole test split (n_test) [FEATURE 4].")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--success-rel-l2-factor", type=float, default=1.5)
     parser.add_argument("--spsa-samples", type=int, default=16)
@@ -1648,9 +1757,443 @@ def parse():
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--data-root", default=None, help="Path to {example}_out data directory (default: ./{type}_out)")
     parser.add_argument("--model-dir", default=None, help="Base dir containing runs_{type}/ checkpoints (default: .)")
+
+    # ------------------------------------------------------------------
+    # Restored arguments (used in main()/analyses but previously undefined,
+    # so the script could not run). Defaults match the known-good config.json.
+    # ------------------------------------------------------------------
+    parser.add_argument("--tag", default=None,
+                        help="Run tag -> attack_runs_<tag>/ (default: --type). Lets noise-level "
+                             "sweeps write to separate folders.")
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--attack-init-mode", default="exact", choices=["surrogate", "exact"],
+                        help="How the init reconstruction is (re)built from the perturbed sinogram "
+                             "while attacking. 'exact' uses the true pseudoinverse with a "
+                             "straight-through surrogate gradient; 'surrogate' uses the FBP seed.")
+    parser.add_argument("--eval-init-mode", default="exact", choices=["surrogate", "exact"],
+                        help="Init mode used when evaluating the final adversarial sinogram.")
+    parser.add_argument("--noise-subspace", default="measured",
+                        choices=["measured", "full"],
+                        help="Reserved (kept for config compatibility): subspace the data noise "
+                             "is assumed to live in.")
+    parser.add_argument("--no-random-start", action="store_true",
+                        help="Disable the random delta initialisation in PGD/Adam.")
+    parser.add_argument("--stealth-weight", type=float, default=0.0,
+                        help="Penalty on the mean |delta| to keep the sinogram perturbation small.")
+    parser.add_argument("--success-mse-factor", type=float, default=2.0,
+                        help="An attack 'succeeds' (MSE criterion) when adv_mse >= factor * clean_mse.")
+    parser.add_argument("--analysis-eps", type=float, default=None,
+                        help="Budget for the opt-in analyses (default: max(--eps)).")
+    parser.add_argument("--analysis-attack", default=None,
+                        help="Attack used for the opt-in analyses (default: first of --attacks).")
+
+    # ------------------------------------------------------------------
+    # FEATURE 2 -- Ghost hallucination analysis (no adversarial attack).
+    # Adds a null-space ghost x2 = P_NS(x1) to a phantom so the measurement is
+    # (almost) unchanged but the image is not, exposing hallucination directly.
+    # ------------------------------------------------------------------
+    parser.add_argument("--ghost", action="store_true",
+                        help="[FEATURE 2] Run the attack-free ghost/hallucination analysis.")
+    parser.add_argument("--ghost-alpha", default="0.5,1.0,2.0",
+                        help="[FEATURE 2] Comma-separated ghost strengths alpha (relative to "
+                             "||x_gt||) for x_corrupt = x_gt + alpha * ghost.")
+    parser.add_argument("--ghost-source", default="roll", choices=["roll", "perm", "randn"],
+                        help="[FEATURE 2] Source phantom x1 for the ghost x2=P_NS(x1): a rolled "
+                             "copy of x_gt ('roll'), another sample in the batch ('perm'), or "
+                             "random noise ('randn').")
+    parser.add_argument("--ghost-roll", type=int, default=24,
+                        help="[FEATURE 2] Pixel shift used by --ghost-source roll.")
+    parser.add_argument("--ghost-max-samples", type=int, default=None,
+                        help="[FEATURE 2] Sample budget for the ghost analysis "
+                             "(default: --max-samples; -1 = whole test split).")
+
+    # ------------------------------------------------------------------
+    # FEATURE 3 -- Post-hoc data-consistency verification via the Radon transform.
+    # ------------------------------------------------------------------
+    parser.add_argument("--check-consistency", action="store_true",
+                        help="[FEATURE 3] Forward-project every network reconstruction and compare "
+                             "to the measured sinogram, documenting data consistency post-hoc.")
+    parser.add_argument("--consistency-max-samples", type=int, default=-1,
+                        help="[FEATURE 3] Sample budget for the consistency check "
+                             "(default: -1 = whole test split).")
+
+    # ------------------------------------------------------------------
+    # FEATURE 4 -- Consolidated error documentation over the whole test set.
+    # ------------------------------------------------------------------
+    parser.add_argument("--error-report", dest="error_report", action="store_true", default=True,
+                        help="[FEATURE 4] Write the consolidated error_report.csv/.md over all runs "
+                             "(on by default).")
+    parser.add_argument("--no-error-report", dest="error_report", action="store_false",
+                        help="[FEATURE 4] Disable the consolidated error report.")
+
     return parser.parse_args()
+def _fmt_num(v, nd: int = 4) -> str:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return ""
+    if math.isnan(f):
+        return "nan"
+    if f != 0.0 and (abs(f) < 1e-3 or abs(f) >= 1e5):
+        return f"{f:.{nd}e}"
+    return f"{f:.{nd}f}"
+
+def write_error_report(out_root: Path, run_summaries: List[Dict],
+                       tag: str = "", init_method: str = "") -> None:
+    """FEATURE 4 -- consolidate every run's aggregate metrics into one tidy
+    error_report.csv plus a human-readable error_report.md, documenting clean vs
+    adversarial error across the whole evaluated test set in a single place."""
+    if not run_summaries:
+        return
+    meta_cols = ["model_name", "attack_name", "objective", "target", "norm", "eps", "num_examples"]
+    metric_cols = [
+        "clean_rel_l2_mean", "clean_rel_l2_median",
+        "adv_rel_l2_mean", "adv_rel_l2_median", "adv_rel_l2_ci95",
+        "clean_mse_mean", "adv_mse_mean", "mse_ratio_median",
+        "clean_psnr_mean", "adv_psnr_mean",
+        "clean_ssim_mean", "adv_ssim_mean",
+        "clean_mae_mean", "adv_mae_mean",
+        "clean_nrmse_mean", "adv_nrmse_mean",
+        "clean_max_err_mean", "adv_max_err_mean",
+        "adv_e_ran_frac_median", "adv_e_nul_frac_median",
+        "clean_consistency_rel_median", "adv_consistency_rel_median",
+        "success_rel_l2_mean", "success_mse_mean",
+        "adv_to_target_rel_mean", "target_drop_frac_mean",
+        "attack_runtime_per_example_sec",
+    ]
+    cols = meta_cols + metric_cols
+
+    def _eps_key(r):
+        try:
+            return float(r.get("eps"))
+        except (TypeError, ValueError):
+            return float("nan")
+    rows_sorted = sorted(
+        run_summaries,
+        key=lambda r: (str(r.get("model_name")), str(r.get("attack_name")),
+                       str(r.get("objective")), _eps_key(r)),
+    )
+
+    csv_path = out_root / "error_report.csv"
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(cols)
+        for r in rows_sorted:
+            w.writerow([r.get(c, "") for c in cols])
+
+    md_path = out_root / "error_report.md"
+    lines = ["# Error report -- " + str(tag) + " (init=" + str(init_method) + ")", ""]
+    lines.append(str(len(rows_sorted)) + " run(s). Clean vs adversarial error aggregated "
+                 "over the evaluated test set. Per-sample metrics live in each run's "
+                 "per_sample_metrics.csv; all aggregate columns are in error_report.csv.")
+    lines.append("")
+    head = ["model", "attack", "objective", "eps", "n", "clean relL2",
+            "adv relL2 (med)", "adv PSNR", "adv SSIM", "adv null-frac",
+            "adv consist.", "succ relL2"]
+    lines.append("| " + " | ".join(head) + " |")
+    lines.append("|" + "|".join(["---"] * len(head)) + "|")
+    for r in rows_sorted:
+        cells = [
+            str(r.get("model_name", "")), str(r.get("attack_name", "")),
+            str(r.get("objective", "")), _fmt_num(r.get("eps"), 4),
+            str(r.get("num_examples", "")),
+            _fmt_num(r.get("clean_rel_l2_mean")), _fmt_num(r.get("adv_rel_l2_median")),
+            _fmt_num(r.get("adv_psnr_mean"), 2), _fmt_num(r.get("adv_ssim_mean")),
+            _fmt_num(r.get("adv_e_nul_frac_median")),
+            _fmt_num(r.get("adv_consistency_rel_median")),
+            _fmt_num(r.get("success_rel_l2_mean")),
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("[FEATURE 4] wrote " + csv_path.name + " and " + md_path.name
+          + " (" + str(len(rows_sorted)) + " runs) to " + str(out_root))
+
+# ----------------------------------------------------------------------------
+# FEATURE 2 -- attack-free ghost / hallucination analysis
+# ----------------------------------------------------------------------------
+def _ghost_source(x_gt: torch.Tensor, kind: str, roll: int) -> torch.Tensor:
+    """Source phantom x1 from which the null-space ghost x2 = P_NS(x1) is built."""
+    if kind == "roll":
+        return torch.roll(x_gt, shifts=(roll, roll), dims=(-2, -1))
+    if kind == "perm":
+        B = x_gt.shape[0]
+        idx = torch.roll(torch.arange(B, device=x_gt.device), shifts=1, dims=0)
+        return x_gt[idx]
+    if kind == "randn":
+        return torch.randn_like(x_gt)
+    raise ValueError(f"Unknown ghost source '{kind}'")
+
+def _save_ghost_example(out_dir, model_name, alpha, idx, gt, ghost, corrupt,
+                        clean_pred, pred_ghost, out_change) -> None:
+    fig, axes = plt.subplots(1, 6, figsize=(22, 4))
+    panels = [
+        (gt, "x_gt", "gray"),
+        (ghost, "ghost = alpha*P_NS(x1)", "RdBu_r"),
+        (corrupt, "x_corrupt = x_gt + ghost", "gray"),
+        (clean_pred, "clean pred (data only)", "gray"),
+        (pred_ghost, "pred w/ ghost in input", "gray"),
+        (out_change, "output change", "RdBu_r"),
+    ]
+    for ax, (img, title, cmap) in zip(axes, panels):
+        if cmap == "RdBu_r":
+            a = max(float(np.abs(img).max()), 1e-12)
+            im = ax.imshow(img, cmap=cmap, vmin=-a, vmax=a)
+        else:
+            im = ax.imshow(img, cmap=cmap)
+        ax.set_title(title, fontsize=9)
+        ax.axis("off")
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.suptitle(f"Ghost hallucination -- {model_name}, alpha={alpha:g}  "
+                 "(measurement ~unchanged; a stable model's output should not move)",
+                 fontsize=10)
+    plt.tight_layout()
+    plt.savefig(out_dir / f"ghost_{model_name}_a{alpha:g}_{idx:03d}.png", dpi=150)
+    plt.close(fig)
+
+def _save_ghost_curves(out_dir, agg: Dict[str, List[Dict]]) -> None:
+    models = [m for m in agg if agg[m]]
+    if not models:
+        return
+    colors = plt.cm.tab10.colors
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+    for i, m in enumerate(models):
+        pts = sorted(agg[m], key=lambda p: p["alpha"])
+        xs = [p["alpha"] for p in pts]
+        ax1.plot(xs, [p["out_change_rel"] for p in pts], "-o",
+                 color=colors[i % len(colors)], label=m)
+        ax2.plot(xs, [p["meas_invis_rel"] for p in pts], "-o",
+                 color=colors[i % len(colors)], label=m)
+    ax1.set_xlabel("ghost strength alpha  (||ghost|| / ||x_gt||)")
+    ax1.set_ylabel("||pred_ghost - clean_pred|| / ||clean_pred||")
+    ax1.set_title("Hallucination response to an invisible input change")
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(fontsize=8)
+    ax2.set_xlabel("ghost strength alpha")
+    ax2.set_ylabel("||A_la ghost|| / ||A_la x_gt||")
+    ax2.set_title("Measurement invisibility of the ghost (~0 confirms it is a ghost)")
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(fontsize=8)
+    plt.tight_layout()
+    plt.savefig(out_dir / "ghost_response.png", dpi=150)
+    plt.close(fig)
+
+def run_ghost_analysis(args, radon, beta, device, loader, init_reconstructor,
+                       projector, out_root, example, init_method, model_names) -> None:
+    """FEATURE 2 -- quantify hallucination WITHOUT an adversarial attack, using ghosts.
+
+    Recipe (per the supplied e-mail): build a null-space ghost  x2 = P_NS(x1)
+    (P_NS == radon.proj_null_image, the projector onto null(A_la)) and form
+    x_corrupt = x_gt + alpha * x2.  Because x2 lies in the null space of the
+    limited-angle forward operator, the measurement A_la(x_corrupt) == A_la(x_gt)
+    is (numerically) unchanged -- the ghost is invisible to the data but plainly
+    visible in the image.  Injecting the ghost into the network input and measuring
+    the resulting output change exposes the model's hallucination / instability
+    directly, with no curvelets and no optimisation."""
+    ghost_alphas = parse_float_list(args.ghost_alpha)
+    gmax = args.ghost_max_samples if args.ghost_max_samples is not None else args.max_samples
+    if gmax is None or gmax < 0:
+        gmax = args.n_test
+    out_dir = out_root / "ghost_analysis"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    per_sample_rows: List[Dict] = []
+    agg: Dict[str, List[Dict]] = {}
+    for model_name in model_names:
+        print(f"[FEATURE 2][ghost] loading {model_name}")
+        model = load_model_checkpoint(example=example, init_method=init_method,
+                                      model_name=model_name, radon=radon, beta=beta,
+                                      device=device, model_dir=args.model_dir)
+        adapter = ModelAttackAdapter(model=model, init_reconstructor=init_reconstructor,
+                                     projector=projector, attack_init_mode=args.attack_init_mode)
+        cache = build_clean_cache(adapter, loader, gmax, device)
+        agg[model_name] = []
+        for alpha in ghost_alphas:
+            rows_a: List[Dict] = []
+            saved = 0
+            for (x_gt, clean_init, y_clean, clean_pred) in cache:
+                with torch.no_grad():
+                    x1 = _ghost_source(x_gt, args.ghost_source, args.ghost_roll)
+                    x2 = radon.proj_null_image(x1)                       # P_NS(x1)
+                    n2 = l2_norm_batch(x2).clamp_min(1e-12).view(-1, 1, 1, 1)
+                    ngt = l2_norm_batch(x_gt).clamp_min(1e-12).view(-1, 1, 1, 1)
+                    x2 = x2 / n2 * ngt                                   # ||x2_i|| == ||x_gt_i||
+                    ghost = alpha * x2
+                    x_corrupt = x_gt + ghost
+
+                    A_ghost = radon.forward_la(ghost)                    # ~0  (ghost is invisible)
+                    A_gt = radon.forward_la(x_gt)
+
+                    x_init_ghost = clean_init + ghost                    # same data, ghosted input
+                    pred_ghost = adapter.model(x_init_ghost, y_clean)
+                    out_change = pred_ghost - clean_pred
+                    oc_null = radon.proj_null_image(out_change)
+                    oc_ran = out_change - oc_null
+                    err_corrupt = clean_pred - x_corrupt                 # unrecoverable ghost
+                    ec_null = radon.proj_null_image(err_corrupt)
+
+                B = x_gt.shape[0]
+                for i in range(B):
+                    gnorm = max(float(l2_norm_batch(x_gt[i:i + 1]).item()), 1e-12)
+                    ghost_norm = max(float(l2_norm_batch(ghost[i:i + 1]).item()), 1e-12)
+                    cp_norm = max(float(l2_norm_batch(clean_pred[i:i + 1]).item()), 1e-12)
+                    a_gt = max(float(l2_norm_batch(A_gt[i:i + 1]).item()), 1e-12)
+                    meas_rel = float(l2_norm_batch(A_ghost[i:i + 1]).item()) / a_gt
+                    oc_rel = float(l2_norm_batch(out_change[i:i + 1]).item()) / cp_norm
+                    row = {
+                        "model": model_name, "alpha": alpha,
+                        "ghost_rel": ghost_norm / gnorm,
+                        "meas_invis_rel": meas_rel,
+                        "out_change_rel": oc_rel,
+                        "out_change_per_meas": oc_rel / max(meas_rel, 1e-9),
+                        "ghost_survival_null": float(l2_norm_batch(oc_null[i:i + 1]).item()) / ghost_norm,
+                        "ghost_leak_range": float(l2_norm_batch(oc_ran[i:i + 1]).item()) / ghost_norm,
+                        "err_vs_corrupt_rel": float(l2_norm_batch(err_corrupt[i:i + 1]).item())
+                                              / max(float(l2_norm_batch(x_corrupt[i:i + 1]).item()), 1e-12),
+                        "ghost_recovered_frac": 1.0 - float(l2_norm_batch(ec_null[i:i + 1]).item()) / ghost_norm,
+                        "pred_ghost_psnr_vs_corrupt": psnr(to_numpy_img(pred_ghost[i]), to_numpy_img(x_corrupt[i])),
+                    }
+                    rows_a.append(row)
+                    per_sample_rows.append(row)
+                if saved < args.save_examples and model_name == model_names[0]:
+                    j = 0
+                    _save_ghost_example(out_dir, model_name, alpha, saved,
+                                        to_numpy_img(x_gt[j]), to_numpy_img(ghost[j]),
+                                        to_numpy_img(x_corrupt[j]), to_numpy_img(clean_pred[j]),
+                                        to_numpy_img(pred_ghost[j]), to_numpy_img(out_change[j]))
+                    saved += 1
+            agg[model_name].append({
+                "alpha": alpha,
+                "meas_invis_rel": _median_of(rows_a, "meas_invis_rel"),
+                "out_change_rel": _median_of(rows_a, "out_change_rel"),
+                "out_change_per_meas": _median_of(rows_a, "out_change_per_meas"),
+                "ghost_survival_null": _median_of(rows_a, "ghost_survival_null"),
+                "ghost_leak_range": _median_of(rows_a, "ghost_leak_range"),
+                "err_vs_corrupt_rel": _median_of(rows_a, "err_vs_corrupt_rel"),
+            })
+            last = agg[model_name][-1]
+            print(f"[FEATURE 2][ghost] {model_name} alpha={alpha:g} "
+                  f"meas_invis={last['meas_invis_rel']:.2e} "
+                  f"out_change_rel={last['out_change_rel']:.4g} "
+                  f"survival_null={last['ghost_survival_null']:.3g}")
+
+    if per_sample_rows:
+        fields = list(per_sample_rows[0].keys())
+        with open(out_dir / "ghost_report.csv", "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerows(per_sample_rows)
+    with open(out_dir / "ghost_summary.json", "w", encoding="utf-8") as f:
+        json.dump({"ghost_source": args.ghost_source, "ghost_roll": args.ghost_roll,
+                   "alphas": ghost_alphas, "per_model": agg}, f, indent=2)
+    _save_ghost_curves(out_dir, agg)
+    print(f"[FEATURE 2] ghost analysis written to {out_dir}")
+
+# ----------------------------------------------------------------------------
+# FEATURE 3 -- post-hoc data-consistency verification via the Radon transform
+# ----------------------------------------------------------------------------
+def _save_consistency_bar(out_dir, summary: Dict[str, Dict]) -> None:
+    models = list(summary.keys())
+    if not models:
+        return
+    la = [summary[m]["la_consistency_rel_median"] for m in models]
+    un = [summary[m]["unmeasured_extrap_rel_median"] for m in models]
+    x = np.arange(len(models))
+    w = 0.38
+    fig, ax = plt.subplots(figsize=(1.6 * len(models) + 3, 5))
+    ax.bar(x - w / 2, la, w, label="measured-angle data consistency", color="#1D9E75")
+    ax.bar(x + w / 2, un, w, label="unmeasured-angle extrapolation err", color="#D4537E")
+    ax.set_xticks(x)
+    ax.set_xticklabels(models)
+    ax.set_ylabel("relative residual (median)")
+    ax.set_title("Post-hoc data consistency via the Radon transform\n"
+                 "||A_la x_hat - y|| / ||y||  (low = consistent)  vs  unmeasured-angle extrapolation")
+    ax.legend(fontsize=8)
+    ax.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(out_dir / "consistency_bar.png", dpi=150)
+    plt.close(fig)
+
+def run_consistency_check(args, radon, beta, device, loader, init_reconstructor,
+                          projector, out_root, example, init_method, model_names) -> None:
+    """FEATURE 3 -- verify each network's data consistency *post-hoc* by forward-
+    projecting its reconstruction with the Radon transform and comparing to the
+    measured sinogram.  Reports, per model:
+      * la_consistency_rel      = ||A_la x_hat - y|| / ||y||   (measured angles; a
+                                  data-consistent network keeps this ~0),
+      * unmeasured_extrap_rel   = ||P_nsn(A x_hat - A x_gt)|| / ||P_nsn(A x_gt)||
+                                  (how the recon extrapolates into the missing angles).
+    The FBP/pinv init reconstruction is included as a baseline column."""
+    cmax = args.consistency_max_samples
+    if cmax is None or cmax < 0:
+        cmax = args.n_test
+    out_dir = out_root / "consistency"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    per_sample: List[Dict] = []
+    summary: Dict[str, Dict] = {}
+    for model_name in model_names:
+        print(f"[FEATURE 3][consistency] loading {model_name}")
+        model = load_model_checkpoint(example=example, init_method=init_method,
+                                      model_name=model_name, radon=radon, beta=beta,
+                                      device=device, model_dir=args.model_dir)
+        la_list, un_list, init_list = [], [], []
+        seen = 0
+        with torch.no_grad():
+            for x_gt, x_init, y_delta in loader:
+                if seen >= cmax:
+                    break
+                x_gt = to_4d(x_gt).to(device)
+                x_init = to_4d(x_init).to(device)
+                y_delta = to_4d(y_delta).to(device)
+                y_clean = projector(y_delta)
+                x_hat = model(x_init, y_clean)
+                y_hat_la = radon.forward_la(x_hat)
+                y_hat_full = radon.forward(x_hat)
+                y_gt_full = radon.forward(x_gt)
+                y_init_la = radon.forward_la(x_init)
+                un_num = radon.proj_nsn(y_hat_full - y_gt_full)
+                un_den_t = radon.proj_nsn(y_gt_full)
+                B = x_gt.shape[0]
+                for i in range(B):
+                    yc = max(float(l2_norm_batch(y_clean[i:i + 1]).item()), 1e-12)
+                    la_res = float(l2_norm_batch((y_hat_la - y_clean)[i:i + 1]).item()) / yc
+                    un_res = float(l2_norm_batch(un_num[i:i + 1]).item()) \
+                             / max(float(l2_norm_batch(un_den_t[i:i + 1]).item()), 1e-12)
+                    init_res = float(l2_norm_batch((y_init_la - y_clean)[i:i + 1]).item()) / yc
+                    la_list.append(la_res)
+                    un_list.append(un_res)
+                    init_list.append(init_res)
+                    per_sample.append({"model": model_name, "idx": seen + i,
+                                       "la_consistency_rel": la_res,
+                                       "unmeasured_extrap_rel": un_res,
+                                       "init_la_consistency_rel": init_res})
+                seen += B
+        summary[model_name] = {
+            "n": len(la_list),
+            "la_consistency_rel_mean": float(np.mean(la_list)) if la_list else float("nan"),
+            "la_consistency_rel_median": float(np.median(la_list)) if la_list else float("nan"),
+            "unmeasured_extrap_rel_mean": float(np.mean(un_list)) if un_list else float("nan"),
+            "unmeasured_extrap_rel_median": float(np.median(un_list)) if un_list else float("nan"),
+            "init_la_consistency_rel_median": float(np.median(init_list)) if init_list else float("nan"),
+        }
+        s = summary[model_name]
+        print(f"[FEATURE 3][consistency] {model_name} "
+              f"la_consistency(median)={s['la_consistency_rel_median']:.3e} "
+              f"unmeasured(median)={s['unmeasured_extrap_rel_median']:.3g}")
+
+    if per_sample:
+        with open(out_dir / "consistency_report.csv", "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(per_sample[0].keys()))
+            w.writeheader()
+            w.writerows(per_sample)
+    with open(out_dir / "consistency_summary.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+    _save_consistency_bar(out_dir, summary)
+    print(f"[FEATURE 3] consistency report written to {out_dir}")
+
 def main() -> None:
-    
+
     args = parse()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     set_seed(args.seed)
@@ -1663,10 +2206,17 @@ def main() -> None:
     out_root.mkdir(parents=True, exist_ok=True)
 
     eps_list = parse_float_list(args.eps)
-     
+
     attack_names = parse_list_arg(args.attacks)
     model_names = parse_list_arg(args.models)
-    
+
+    # FEATURE 1: accept the 'support*' aliases for the range* objectives.
+    args.objective = canonical_objective(args.objective)
+    # FEATURE 4: --max-samples -1 means "evaluate the whole test split".
+    if args.max_samples is None or args.max_samples < 0:
+        args.max_samples = args.n_test
+        print(f"[full-testset] --max-samples=-1 -> evaluating all {args.max_samples} test samples")
+
     summary = load_summary(example, data_root=args.data_root)
     average_l2_noise = float(summary["mean_norm_y_minus_y_delta"])
     mean_sino_norm = float(summary.get("mean_norm_y") or 0.0)
@@ -1695,28 +2245,20 @@ def main() -> None:
             num_workers=args.num_workers,
             data_root=args.data_root,
             shuffle=False,
-            device=device
+            device=device,
         )
     else:
         raise NotImplementedError("Lodopab not implemented")
-        loader = get_lodopab_dataloader(
-        init_recon=init_method,
-        batch_size=args.batch_size,
-        split=args.split,
-        n_train=args.n_train,
-        n_test=args.n_test,
-        data_root=args.root,
-        shuffle=False,
-        num_workers=args.num_workers,
-        device=None,
-    )
 
-    init_reconstructor = InitReconstructor(example=example, init_method=init_method, summary=summary, radon=radon)
-   
+    init_reconstructor = InitReconstructor(example=example, init_method=init_method,
+                                           summary=summary, radon=radon)
+
     print("Data collection for attack runs")
     scatter_all: Dict[str, Dict[str, List[Dict]]] = defaultdict(lambda: defaultdict(list))
     decomp_by_eps: Dict[Tuple[str, float], Dict[str, List[Dict]]] = defaultdict(dict)
     curve_rows: Dict[str, Dict[str, List[Dict]]] = defaultdict(lambda: defaultdict(list))
+    # FEATURE 4: collect every run's aggregate summary for the consolidated report.
+    all_run_summaries: List[Dict] = []
 
     for model_name in model_names:
         print("loading " + model_name)
@@ -1727,13 +2269,13 @@ def main() -> None:
             radon=radon,
             beta=average_l2_noise,
             device=device,
-            model_dir=args.model_dir
+            model_dir=args.model_dir,
         )
         adapter = ModelAttackAdapter(
             model=model,
             init_reconstructor=init_reconstructor,
             projector=projector,
-            attack_init_mode=args.init,
+            attack_init_mode=args.attack_init_mode,
         )
 
         print("started caching of clean model outputs")
@@ -1744,9 +2286,10 @@ def main() -> None:
                 x_gt = to_4d(x_gt).to(device)
                 x_init = to_4d(x_init).to(device)
                 y_delta = to_4d(y_delta).to(device)
-                if torch.linalg.norm(y_delta - y_clean) > 1e-8:
-                    print("Something went wrong with the noise")
-                    raise ValueError("Problem.")
+                # Project the (limited-angle) measurement onto range(A_la). The
+                # previous in-loop sanity check referenced y_clean before it was
+                # assigned (a NameError that prevented the script from running) and
+                # is dropped: proj_ran is the correct, idempotent operation here.
                 y_clean = adapter.projector(y_delta)
                 clean_pred = adapter.model(x_init, y_clean)
                 clean_rows_cache.append((x_gt, x_init, y_clean, clean_pred))
@@ -1770,7 +2313,7 @@ def main() -> None:
                         break
                     # Per-sample L2 budget:
                     eps_batch = eps_nominal * l2_norm_batch(y_clean)
-                    
+
                     attack_result = run_attack(
                         attack_name=attack_name,
                         adapter=adapter,
@@ -1785,6 +2328,12 @@ def main() -> None:
                     print("Evaluating attack")
                     with torch.no_grad():
                         adv_pred, adv_init, y_adv = adapter.forward(attack_result.y_adv, mode=args.eval_init_mode)
+                    # FEATURE 5: for the targeted attack, log how close each
+                    # reconstruction gets to the chosen target (e.g. the 0-image).
+                    target_eval = (
+                        build_target(args.target, x_gt, clean_pred)
+                        if args.objective == "targeted" else None
+                    )
                     batch_rows = evaluate_batch(
                         x_gt=x_gt,
                         clean_init=clean_init,
@@ -1795,7 +2344,9 @@ def main() -> None:
                         adv_pred=adv_pred,
                         delta=attack_result.delta,
                         success_rel_l2_factor=args.success_rel_l2_factor,
+                        success_mse_factor=args.success_mse_factor,
                         radon=radon,
+                        target=target_eval,
                     )
                     rows.extend(batch_rows)
                     remaining_slots = args.save_examples - len(example_rows)
@@ -1852,6 +2403,9 @@ def main() -> None:
                 summary_metrics["eps_budget_mode"] = "per_sample_l2"
                 summary_metrics["attack_init_mode"] = args.attack_init_mode
                 summary_metrics["eval_init_mode"] = args.eval_init_mode
+                summary_metrics["objective"] = args.objective
+                summary_metrics["target"] = args.target if args.objective == "targeted" else ""
+                all_run_summaries.append(dict(summary_metrics))  # FEATURE 4
                 with open(result_dir / "summary.json", "w", encoding="utf-8") as f:
                     json.dump(summary_metrics, f, indent=2)
                 if rows:
@@ -1871,8 +2425,6 @@ def main() -> None:
                     f"clean_rel_l2={summary_metrics.get('clean_rel_l2_mean', float('nan')):.3f}"
                 )
     # After every model/attack/eps for this noise level, write the cross-run plots.
-    # Per attack: the robustness curve (error vs eps) and the pooled sensitivity
-    # scatter. Per (attack, eps): the range/null error decomposition bar chart.
     for att_name, rows_by_model in scatter_all.items():
         plot_dir = out_root / att_name
         plot_dir.mkdir(parents=True, exist_ok=True)
@@ -1907,6 +2459,30 @@ def main() -> None:
         example=example,
         init_method=init_method,
     )
+
+    # FEATURE 4: consolidated error documentation across the whole evaluation.
+    if getattr(args, "error_report", True) and all_run_summaries:
+        write_error_report(out_root, all_run_summaries, tag=tag, init_method=init_method)
+
+    # FEATURE 2: attack-free ghost / hallucination analysis.
+    if args.ghost:
+        run_ghost_analysis(
+            args=args, radon=radon, beta=average_l2_noise, device=device, loader=loader,
+            init_reconstructor=init_reconstructor, projector=projector,
+            out_root=out_root, example=example, init_method=init_method,
+            model_names=model_names,
+        )
+
+    # FEATURE 3: post-hoc data-consistency verification via the Radon transform.
+    if args.check_consistency:
+        run_consistency_check(
+            args=args, radon=radon, beta=average_l2_noise, device=device, loader=loader,
+            init_reconstructor=init_reconstructor, projector=projector,
+            out_root=out_root, example=example, init_method=init_method,
+            model_names=model_names,
+        )
+
+    print(f"\nAll done. Results under {out_root}")
 
 
 if __name__ == "__main__":
