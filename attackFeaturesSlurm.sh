@@ -74,9 +74,9 @@ for NOISE in $NOISE_LEVELS; do
   if [ ! -f "$DATA_DIR/summary.json" ]; then
     python -u create_ellipse_data.py --img_size $IMG_SIZE --noise $NOISE \
       --min_angle $MIN_ANGLE --max_angle $MAX_ANGLE --num_thetas $NUM_THETAS \
-      --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_BASE
-    python -u train.py --type $TYPE --out_dir $MODEL_BASE/$NOISE \
-      --data_dir $DATA_BASE/$NOISE --models resnet,nsn
+      --n_samples $N_SAMPLES --matrix_mode 1 --out_dir $DATA_DIR
+    python -u train.py --type $TYPE --out_dir $MODEL_DIR \
+      --data_dir $DATA_DIR --models resnet,nsn
     echo "Created data for noise $NOISE at $DATA_DIR and trained models $MODELS"
     continue
   fi
